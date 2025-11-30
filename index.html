@@ -117,29 +117,30 @@
         const TEAM_COLLECTION_NAME = 'teams';
         const DRAFT_STATUS_ID = 'draft_status'; // ID fisso per lo stato del draft
 
-        // --- FUNZIONE UTILITY PER LIVELLO CASUALE ---
+        // --- FUNZIONI UTILITY ---
 
         /**
          * Genera un numero intero casuale tra min (incluso) e max (incluso).
-         * @param {number} min Il livello minimo.
-         * @param {number} max Il livello massimo.
-         * @returns {number} Il livello casuale generato.
          */
         const getRandomLevel = (min, max) => {
             min = Math.ceil(min);
             max = Math.floor(max);
-            // Math.random() * (max - min + 1) genera un numero tra 0 e (max - min + 1)
-            // Math.floor(...) lo arrotonda per difetto, + min sposta il range.
             return Math.floor(Math.random() * (max - min + 1)) + min;
         };
         
-        // --- FUNZIONE UTILITY PER MODALE DI CONFERMA CUSTOM ---
-        
+        /**
+         * Mescola casualmente gli elementi di un array (algoritmo Fisher-Yates).
+         */
+        const shuffleArray = (array) => {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+            return array;
+        };
+
         /**
          * Mostra una modale di conferma personalizzata (sostituisce window.confirm).
-         * @param {string} message - Il messaggio da visualizzare.
-         * @param {string} title - Il titolo della modale.
-         * @returns {Promise<boolean>} Risolve a true se confermato, false altrimenti.
          */
         const showConfirmationModal = (message, title = "Conferma Azione") => {
             return new Promise(resolve => {
@@ -200,7 +201,6 @@
                     }
                     isAuthReady = true;
 
-                    // Il rendering finale viene gestito dopo la verifica della password globale
                     if (userId) {
                         if (!hasGlobalAccess) {
                             renderGlobalAccess();
@@ -240,84 +240,123 @@
 
         /**
          * Determina l'ID della squadra che ha il prossimo turno.
-         * La logica si basa sul conteggio dei giocatori in rosa per simulare un draft a serpente.
-         * @returns {string | null} L'ID della prossima squadra che deve draftare, o null se non ci sono squadre.
+         * La logica usa prima il 'draftOrder' fisso (se impostato), poi passa al conteggio (a serpente).
          */
         const getNextTeamIdToDraft = () => {
-            // Filtra eventuali squadre Admin o squadre incomplete (senza ID) prima di tutto
             const activeTeams = teams.filter(t => !t.isAdmin && t.id);
-
             if (activeTeams.length === 0) return null;
 
             // 1. Ordina le squadre in base alla dimensione della rosa (crescente)
-            // Usa il nome come criterio secondario per stabilità in caso di parità di dimensione della rosa.
             const sortedTeams = [...activeTeams].sort((a, b) => {
                 if (a.players.length !== b.players.length) {
                     return a.players.length - b.players.length;
                 }
-                // Fallback sicuro se le lunghezze sono uguali (prevenzione dell'errore di localeCompare su undefined/null)
                 const nameA = a.name || '';
                 const nameB = b.name || '';
                 return nameA.localeCompare(nameB);
             });
 
             const minPlayers = sortedTeams[0].players.length;
+            const teamsToPick = sortedTeams.filter(t => t.players.length === minPlayers);
+            const teamIdsToPick = teamsToPick.map(t => t.id);
+            const teamIdsInOrder = teamsToPick.sort((a, b) => (a.name || '').localeCompare(b.name || '')).map(t => t.id);
             
-            // 2. Filtra le squadre che hanno il minimo numero di giocatori.
-            const nextRoundTeams = sortedTeams.filter(t => t.players.length === minPlayers);
-
-            // 3. Se tutte le squadre hanno lo stesso numero di giocatori (inizio o fine turno):
-            if (nextRoundTeams.length === activeTeams.length) {
-                
-                // Ordina in base al nome (alfabetico) per coerenza nel round
-                const orderedTeams = nextRoundTeams.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-                const teamIds = orderedTeams.map(t => t.id);
-                
-                // Inizio assoluto del draft
-                if (!draftStatus.lastDraftedByTeamId) {
-                    return teamIds[0];
-                }
-                
-                // Continua il turno in ordine sequenziale
-                const lastDraftedIndex = teamIds.indexOf(draftStatus.lastDraftedByTeamId);
-                const nextIndex = (lastDraftedIndex + 1) % teamIds.length;
-                
-                // Se il draft è circolare e si è tornati all'inizio, torna al primo
-                if (nextIndex === 0 && lastDraftedIndex === teamIds.length - 1) {
-                    return teamIds[0];
-                }
-                
-                // Se non è l'ultimo, ritorna il successivo
-                return teamIds[nextIndex];
-
-
-            } 
-            
-            // 4. Se non tutte le squadre hanno il minimo, la prossima è la prima della lista nextRoundTeams.
-            
-            const teamsToPick = nextRoundTeams.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-            
-            // Se non c'è ID draftato, è il turno della prima squadra con meno giocatori.
-            if (!draftStatus.lastDraftedByTeamId) {
-                 return teamsToPick[0].id;
-            }
-
+            // Definisci lastDraftedTeam qui
             const lastDraftedTeam = activeTeams.find(t => t.id === draftStatus.lastDraftedByTeamId);
-            const orderedTeamIds = teamsToPick.map(t => t.id);
 
-            // Se l'ultima squadra che ha draftato non è la squadra con meno giocatori (e quindi ha finito il suo turno),
-            // è il turno della prima squadra tra quelle con meno giocatori (teamsToPick[0])
-            if (lastDraftedTeam && lastDraftedTeam.players.length > minPlayers) {
-                return teamsToPick[0].id;
+            // --- LOGICA ORDINE INIZIALE FISSO (Se draftOrder è stato generato) ---
+            if (draftStatus.draftOrder && draftStatus.draftOrder.length > 0) {
+                
+                // Se siamo nel PRIMO round (tutti hanno 0 giocatori) o nel round basato sull'ordine fisso:
+                if (minPlayers === 0) {
+                    // Ordine iniziale fisso
+                    if (!draftStatus.lastDraftedByTeamId) {
+                        return draftStatus.draftOrder[0];
+                    }
+                    const lastDraftedIndex = draftStatus.draftOrder.indexOf(draftStatus.lastDraftedByTeamId);
+                    const nextIndex = lastDraftedIndex + 1;
+                    
+                    // Se il prossimo indice è ancora nell'array draftOrder, usa quello
+                    if (nextIndex < draftStatus.draftOrder.length) {
+                        return draftStatus.draftOrder[nextIndex];
+                    }
+                    
+                    // Se il primo round è finito (nextIndex è length), passa alla logica serpente
+                }
+
+                // --- LOGICA SERPENTE (dopo il round 1) ---
+                
+                // Riordina i team che DEVONO PICKARE (quelli con minPlayers) usando l'ordine iniziale come base.
+                const teamsWithMinPlayersInDraftOrder = draftStatus.draftOrder
+                    .filter(id => teamsToPick.some(t => t.id === id));
+                    
+                // Se tutte le squadre attive hanno lo stesso numero di giocatori (fine di un round)
+                if (teamsToPick.length === activeTeams.length) {
+                    
+                    // Inverti l'ordine per il round pari (Snake Draft)
+                    const isEvenRound = (minPlayers % 2) === 0;
+                    
+                    const referenceOrder = isEvenRound 
+                        ? teamsWithMinPlayersInDraftOrder.slice() // Ordine originale (1, 2, 3)
+                        : teamsWithMinPlayersInDraftOrder.slice().reverse(); // Ordine inverso (3, 2, 1)
+
+                    const lastDraftedIndex = referenceOrder.indexOf(draftStatus.lastDraftedByTeamId);
+                    const nextIndex = lastDraftedIndex + 1;
+                    
+                    return referenceOrder[nextIndex] || referenceOrder[0]; // Ritorna al primo se l'array è finito.
+                } 
+                
+                // Logica generale: trova il prossimo ID nell'ordine corretto
+                const referenceOrder = (minPlayers % 2) === 0 
+                    ? teamsWithMinPlayersInDraftOrder 
+                    : teamsWithMinPlayersInDraftOrder.slice().reverse();
+
+                const lastDraftedIndex = referenceOrder.indexOf(draftStatus.lastDraftedByTeamId);
+                const nextIndex = lastDraftedIndex + 1;
+
+                // Se l'ultima squadra draftata non è nell'elenco dei 'teamsToPick' (cioè ha finito il turno),
+                // il turno torna al primo della lista 'teamsToPick'
+                if (lastDraftedTeam && lastDraftedTeam.players.length > minPlayers) {
+                    return teamsToPick[0].id;
+                }
+
+                return referenceOrder[nextIndex] || teamsToPick[0].id; // Fallback al primo con meno giocatori
+
             }
+            // --- LOGICA BASATA SOLO SULLA DIMENSIONE DELLA ROSA (Fallback o Inizio) ---
 
-            // Altrimenti, continua l'ordine tra le squadre con lo stesso minimo di giocatori.
-            const lastIndex = orderedTeamIds.indexOf(draftStatus.lastDraftedByTeamId);
-            const nextIndex = lastIndex + 1;
-            
-            return orderedTeamIds[nextIndex] || orderedTeamIds[0];
+            if (teamsToPick.length === activeTeams.length) {
+                
+                // Inizio assoluto del draft (senza ordine fisso)
+                if (!draftStatus.lastDraftedByTeamId) {
+                    return teamIdsInOrder[0]; // Primo in ordine alfabetico
+                }
+                
+                // Continua il turno in ordine sequenziale alfabetico
+                const lastDraftedIndex = teamIdsInOrder.indexOf(draftStatus.lastDraftedByTeamId);
+                const nextIndex = (lastDraftedIndex + 1) % teamIdsInOrder.length;
+                
+                return teamIdsInOrder[nextIndex];
+
+            } else {
+                // Se non tutte le squadre hanno il minimo, la prossima è la prima della lista nextRoundTeams (alfabetico)
+                
+                if (!draftStatus.lastDraftedByTeamId) {
+                     return teamsToPick[0].id;
+                }
+
+                // Se l'ultima squadra che ha draftato non è la squadra con meno giocatori
+                if (lastDraftedTeam && lastDraftedTeam.players.length > minPlayers) {
+                    return teamsToPick[0].id;
+                }
+
+                // Continua l'ordine tra le squadre con lo stesso minimo di giocatori.
+                const lastIndex = teamIdsToPick.indexOf(draftStatus.lastDraftedByTeamId);
+                const nextIndex = lastIndex + 1;
+                
+                return teamIdsToPick[nextIndex] || teamsToPick[0].id;
+            }
         };
-
 
         // --- FUNZIONI DI RENDERIZZAZIONE ---
 
@@ -587,25 +626,32 @@
             document.getElementById('header-title').textContent = "Area Admin (serieseria)";
 
             // Lista di tutte le squadre registrate
-            const teamsListHtml = teams.length > 0
-                ? teams.map(t => `
-                    <li class="p-3 bg-white rounded-lg border border-gray-200 flex flex-col md:flex-row justify-between items-center space-y-2 md:space-y-0 text-gray-700 shadow-sm">
-                        <div class="flex-grow text-left w-full md:w-auto">
-                            <strong class="text-blue-600">${t.name}</strong> - Presidente: ${t.presidentName} (${t.players ? t.players.length : 0} gioc.)
-                            <div class="text-xs text-gray-500 mt-1 break-all">Doc ID: ${t.id}</div>
-                        </div>
-                        <div class="flex space-x-2">
-                            <button onclick="window.renderAdminTeamView('${t.id}')" class="bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-bold py-2 px-4 rounded-full transition duration-150">
-                                <i data-lucide="eye" class="inline w-4 h-4"></i> Gestisci Rosa
-                            </button>
-                            <button onclick="window.removeTeam('${t.id}', '${t.name}')" class="bg-red-500 hover:bg-red-600 text-white text-xs font-bold py-2 px-4 rounded-full transition duration-150">
-                                <i data-lucide="trash-2" class="inline w-4 h-4"></i> Rimuovi Squadra
-                            </button>
-                        </div>
-                    </li>
-                `).join('')
-                : '<li class="text-center text-gray-500 p-4 bg-gray-100 rounded-lg border border-gray-200">Nessuna squadra registrata.</li>';
+            const teamsListHtml = teams.filter(t => !t.isAdmin).map((t, index) => `
+                <li class="p-3 bg-white rounded-lg border border-gray-200 flex flex-col md:flex-row justify-between items-center space-y-2 md:space-y-0 text-gray-700 shadow-sm">
+                    <div class="flex-grow text-left w-full md:w-auto">
+                        <strong class="text-blue-600">${t.name}</strong> - Presidente: ${t.presidentName} (${t.players ? t.players.length : 0} gioc.)
+                        <div class="text-xs text-gray-500 mt-1 break-all">Doc ID: ${t.id}</div>
+                    </div>
+                    <div class="flex space-x-2">
+                        <button onclick="window.renderAdminTeamView('${t.id}')" class="bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-bold py-2 px-4 rounded-full transition duration-150">
+                            <i data-lucide="eye" class="inline w-4 h-4"></i> Gestisci Rosa
+                        </button>
+                        <button onclick="window.removeTeam('${t.id}', '${t.name}')" class="bg-red-500 hover:bg-red-600 text-white text-xs font-bold py-2 px-4 rounded-full transition duration-150">
+                            <i data-lucide="trash-2" class="inline w-4 h-4"></i> Rimuovi Squadra
+                        </button>
+                    </div>
+                </li>
+            `).join('');
             
+            // Stato Ordine Draft
+            const draftOrderList = draftStatus.draftOrder 
+                ? draftStatus.draftOrder.map((id, index) => {
+                    const team = teams.find(t => t.id === id);
+                    return `<li class="p-1.5 bg-gray-50 rounded text-sm">${index + 1}. ${team ? team.name : 'Squadra Sconosciuta'}</li>`;
+                }).join('')
+                : '<li class="p-1.5 text-sm text-gray-500">Nessun ordine iniziale generato.</li>';
+
+
             // Lista dei giocatori nel draft con opzione di rimozione
             const draftListHtml = draftPlayers.length > 0
                 ? draftPlayers.map(p => `
@@ -624,6 +670,25 @@
                         <i data-lucide="log-out" class="w-5 h-5"></i>
                         Logout Admin
                     </button>
+
+                    <!-- Gestione Ordine Draft -->
+                    <div class="p-6 bg-yellow-50 rounded-xl border border-yellow-200 shadow-lg">
+                        <h2 class="text-xl font-bold text-yellow-700 mb-4 flex items-center">
+                            <i data-lucide="shuffle" class="w-5 h-5 mr-2 text-yellow-500"></i>
+                            Ordine Draft Iniziale
+                        </h2>
+                        <div class="mb-4">
+                            <h3 class="font-semibold text-gray-700 mb-2">Ordine Attuale:</h3>
+                            <ul class="list-decimal pl-5 space-y-1">
+                                ${draftOrderList}
+                            </ul>
+                        </div>
+                        <button onclick="window.generateDraftOrder()" class="btn-secondary w-full bg-yellow-500 hover:bg-yellow-600">
+                            <i data-lucide="dice-5" class="w-5 h-5"></i>
+                            Genera Ordine Casuale (${teams.filter(t => !t.isAdmin).length} squadre)
+                        </button>
+                        <p class="text-xs text-yellow-700 mt-2">Nota: questo imposta l'ordine iniziale del primo round. I round successivi seguiranno la logica a serpente.</p>
+                    </div>
                     
                     <!-- Aggiungi Giocatore al Draft -->
                     <div class="p-6 bg-green-50 rounded-xl border border-green-200 shadow-lg">
@@ -659,7 +724,7 @@
                     <div class="p-6 bg-white rounded-xl border border-gray-200 shadow-lg">
                         <h2 class="text-xl font-bold text-gray-700 mb-4 flex items-center">
                             <i data-lucide="shield-half" class="w-5 h-5 mr-2 text-yellow-500"></i>
-                            Gestione Squadre Registrate (${teams.length})
+                            Gestione Squadre Registrate (${teams.filter(t => !t.isAdmin).length})
                         </h2>
                         <ul class="space-y-3 max-h-96 overflow-y-auto">
                             ${teamsListHtml}
@@ -698,6 +763,17 @@
 
                 if (snapshot.empty) {
                     // Squadra non trovata -> REGISTRAZIONE
+
+                    // ** NUOVO CONTROLLO: Verifica se esiste un nome simile con maiuscole/minuscole diverse **
+                    // Questo controllo in realtà è già implicito nella query 'q' sopra, 
+                    // ma per un ulteriore controllo di sicurezza e chiarezza:
+                    const existingTeam = teams.find(t => t.name.toLowerCase() === teamName);
+                    
+                    if (existingTeam) {
+                        return renderLogin(`Nome squadra '${teamNameInput}' già registrato. Inserisci la password corretta per accedere.`);
+                    }
+
+
                     if (password.length < 5) {
                         return renderLogin("Registrazione fallita: La password deve avere almeno 5 caratteri.");
                     }
@@ -809,11 +885,18 @@
 
             // NUOVO LISTENER: Ascolta lo stato del draft per la logica dei turni
             draftStatusUnsub = onSnapshot(getDraftStatusDocRef(), (docSnapshot) => {
-                draftStatus = docSnapshot.exists() ? docSnapshot.data() : { lastDraftedByTeamId: null };
-                if (document.getElementById('header-title').textContent.includes('Area Draft')) renderDraft(); 
+                draftStatus = docSnapshot.exists() ? docSnapshot.data() : { lastDraftedByTeamId: null, draftOrder: [] };
+                
+                // Aggiorna l'admin se l'ordine è stato modificato
+                const currentTitle = document.getElementById('header-title').textContent;
+                if (currentTeam.isAdmin && currentTitle.includes('Area Admin')) {
+                    renderAdmin(); 
+                } else if (document.getElementById('header-title').textContent.includes('Area Draft')) {
+                     renderDraft(); 
+                }
             }, (error) => {
                 console.warn("Nessun documento di stato del draft trovato. Verrà creato al primo draft.");
-                draftStatus = { lastDraftedByTeamId: null };
+                draftStatus = { lastDraftedByTeamId: null, draftOrder: [] };
             });
 
             // Listener specifico per l'utente loggato (per l'aggiornamento della homepage)
@@ -832,6 +915,41 @@
 
 
         // --- FUNZIONI ADMIN (Gestione Dati) ---
+
+        /**
+         * Genera un ordine di draft casuale per tutte le squadre attive.
+         */
+        window.generateDraftOrder = async () => {
+             if (!currentTeam || !currentTeam.isAdmin) return;
+             
+             const activeTeams = teams.filter(t => !t.isAdmin && t.id);
+             if (activeTeams.length === 0) {
+                 return alert("Nessuna squadra registrata per generare l'ordine.");
+             }
+
+             const teamIds = activeTeams.map(t => t.id);
+             const shuffledIds = shuffleArray(teamIds);
+             
+             const confirmation = await showConfirmationModal(
+                 `Generare un ordine casuale per ${shuffledIds.length} squadre? L'ordine precedente verrà sovrascritto.`,
+                 "Genera Ordine Draft"
+             );
+             if (!confirmation) return;
+
+             try {
+                 const draftStatusDocRef = getDraftStatusDocRef();
+                 await setDoc(draftStatusDocRef, {
+                     draftOrder: shuffledIds,
+                     lastDraftedByTeamId: null, // Resetta il turno
+                     generatedAt: serverTimestamp()
+                 }, { merge: true });
+                 
+                 alert("Ordine di draft generato e salvato con successo!");
+             } catch (error) {
+                 console.error("Errore nella generazione dell'ordine di draft:", error);
+                 alert("Errore nella generazione. Controlla la console.");
+             }
+        };
 
         const addDraftPlayer = async (e) => {
             e.preventDefault();
@@ -1048,11 +1166,10 @@
                     
                     // Verifica che lo stato del draft esista (o lo creiamo) e leggilo
                     const statusDoc = await transaction.get(draftStatusDocRef);
-                    const currentStatus = statusDoc.exists() ? statusDoc.data() : { lastDraftedByTeamId: null };
+                    const currentStatus = statusDoc.exists() ? statusDoc.data() : { lastDraftedByTeamId: null, draftOrder: [] };
 
                     // ULTIMA VERIFICA DEL TURNO (contro la concorrenza)
-                    const currentTeams = teams.map(t => ({ id: t.id, players: t.players }));
-                    const nextIdInTransaction = getNextTeamIdToDraft(); // Usa la logica con i dati freschi del cache locale (che è in sync con i listeners)
+                    const nextIdInTransaction = getNextTeamIdToDraft();
 
                     if (currentTeam.id !== nextIdInTransaction) {
                          throw "Turno non valido. Qualcun altro ha draftato prima. Riprova.";
@@ -1088,6 +1205,7 @@
                     // 3. AGGIORNA LO STATO DEL TURNO
                     transaction.set(draftStatusDocRef, { 
                         lastDraftedByTeamId: currentTeam.id,
+                        draftOrder: currentStatus.draftOrder || [], // Mantieni l'ordine se esiste
                         lastDraftedTime: serverTimestamp()
                     });
                 });
