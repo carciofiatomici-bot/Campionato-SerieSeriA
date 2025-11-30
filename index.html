@@ -6,39 +6,70 @@
     <title>Fantacalcio - Gestore Squadra e Draft</title>
     <!-- Caricamento di Tailwind CSS per lo styling -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         body {
             font-family: 'Inter', sans-serif;
-            background-color: #f7f7f7;
+            background-color: #f0f4f8; /* Sfondo Grigio Chiaro */
+            color: #1f2937; /* Testo Scuro */
         }
         .main-card {
-            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 0 10px -5px rgba(0, 0, 0, 0.04);
+            background-color: #ffffff; /* Sfondo Bianco */
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.08);
+            border: 1px solid #e2e8f0;
+        }
+        .text-primary-color {
+            color: #10b981; /* Verde Smeraldo per l'accento */
         }
         .btn-primary {
-            @apply bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition duration-150 ease-in-out;
+            @apply bg-green-500 hover:bg-green-600 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition duration-200 ease-in-out transform hover:scale-[1.01] flex items-center justify-center space-x-2;
         }
         .btn-secondary {
-            @apply bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition duration-150 ease-in-out;
+            @apply bg-blue-500 hover:bg-blue-600 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition duration-200 ease-in-out flex items-center justify-center space-x-2;
         }
         .input-style {
-            @apply w-full p-3 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500;
+            @apply w-full p-3 border border-gray-300 bg-white text-gray-800 rounded-lg focus:ring-green-500 focus:border-green-500 transition duration-150;
         }
         .error-message {
-            @apply bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4;
+            @apply bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative mb-4 font-medium;
+        }
+        /* Stile per il Modale di Conferma */
+        .modal {
+            @apply fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity duration-300;
+        }
+        .modal-content {
+            @apply bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full;
         }
     </style>
 </head>
 <body class="min-h-screen flex items-center justify-center p-4">
 
     <!-- Contenitore Principale dell'App -->
-    <div id="app" class="w-full max-w-4xl bg-white rounded-xl main-card p-6 md:p-10">
-        <h1 class="text-3xl font-bold text-center text-gray-800 mb-6" id="header-title">Fantacalcio League</h1>
+    <div id="app" class="w-full max-w-4xl main-card rounded-xl p-6 md:p-10">
+        <h1 class="text-3xl font-extrabold text-center text-primary-color mb-8 tracking-wide border-b pb-4 border-gray-200" id="header-title">
+            <i data-lucide="trophy" class="inline-block w-7 h-7 mr-2 text-yellow-500"></i>
+            Fantacalcio League
+        </h1>
         <div id="content">
             <!-- Il contenuto dinamico verrà iniettato qui -->
             <div class="text-center text-gray-500">Inizializzazione in corso...</div>
         </div>
     </div>
+    
+    <!-- Modale di Conferma (Admin) -->
+    <div id="confirmation-modal" class="modal hidden">
+        <div class="modal-content space-y-4">
+            <h3 class="text-xl font-bold text-red-600 flex items-center"><i data-lucide="shield-alert" class="w-6 h-6 mr-2"></i> Conferma Eliminazione</h3>
+            <p id="modal-text" class="text-gray-700">Sei sicuro di voler procedere?</p>
+            <div class="flex justify-end space-x-3">
+                <button id="modal-cancel" class="bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-2 px-4 rounded-lg transition">Annulla</button>
+                <button id="modal-confirm" class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-lg transition">Conferma</button>
+            </div>
+        </div>
+    </div>
+
 
     <!-- Modulo di Importazione Firebase -->
     <script type="module">
@@ -62,6 +93,9 @@
         
         // Determina la configurazione (usa la variabile globale se disponibile, altrimenti usa quella raw)
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : rawFirebaseConfig;
+        
+        // VARIABILE GLOBALE DI ACCESSO
+        const GLOBAL_ACCESS_PASSWORD = 'gladioscarso';
 
         // Variabili Globali
         let app;
@@ -72,9 +106,12 @@
         let isAuthReady = false;
         let teams = []; // Cache di tutte le squadre per l'admin
         let draftPlayers = []; // Cache dei giocatori disponibili per il draft
+        let hasGlobalAccess = false; // Nuovo stato di accesso globale
 
         // Configurazione dell'ID dell'App per i percorsi Firestore
         const appId = typeof __app_id !== 'undefined' ? __app_id : firebaseConfig.projectId;
+        const PLAYER_COLLECTION_NAME = 'draft_players';
+        const TEAM_COLLECTION_NAME = 'teams';
 
         // --- FUNZIONE UTILITY PER LIVELLO CASUALE ---
 
@@ -91,6 +128,46 @@
             // Math.floor(...) lo arrotonda per difetto, + min sposta il range.
             return Math.floor(Math.random() * (max - min + 1)) + min;
         };
+        
+        // --- FUNZIONE UTILITY PER MODALE DI CONFERMA CUSTOM ---
+        
+        /**
+         * Mostra una modale di conferma personalizzata (sostituisce window.confirm).
+         * @param {string} message - Il messaggio da visualizzare.
+         * @returns {Promise<boolean>} Risolve a true se confermato, false altrimenti.
+         */
+        const showConfirmationModal = (message) => {
+            return new Promise(resolve => {
+                const modal = document.getElementById('confirmation-modal');
+                const modalText = document.getElementById('modal-text');
+                const btnConfirm = document.getElementById('modal-confirm');
+                const btnCancel = document.getElementById('modal-cancel');
+
+                modalText.textContent = message;
+                modal.classList.remove('hidden');
+
+                const handleConfirm = () => {
+                    modal.classList.add('hidden');
+                    cleanup();
+                    resolve(true);
+                };
+
+                const handleCancel = () => {
+                    modal.classList.add('hidden');
+                    cleanup();
+                    resolve(false);
+                };
+
+                const cleanup = () => {
+                    btnConfirm.removeEventListener('click', handleConfirm);
+                    btnCancel.removeEventListener('click', handleCancel);
+                };
+
+                btnConfirm.addEventListener('click', handleConfirm);
+                btnCancel.addEventListener('click', handleCancel);
+            });
+        };
+
 
         // --- INIZIALIZZAZIONE FIREBASE E AUTENTICAZIONE ---
 
@@ -116,8 +193,11 @@
                     }
                     isAuthReady = true;
 
+                    // Il rendering finale viene gestito dopo la verifica della password globale
                     if (userId) {
-                        if (!currentTeam) {
+                        if (!hasGlobalAccess) {
+                            renderGlobalAccess();
+                        } else if (!currentTeam) {
                             renderLogin();
                         } else {
                             currentTeam.isAdmin ? renderAdmin() : renderHomepage();
@@ -127,6 +207,7 @@
                             <div class="error-message">Errore Auth: Impossibile ottenere un ID utente. Controlla la configurazione Firebase Auth.</div>
                          `;
                     }
+                    lucide.createIcons(); // Inizializza le icone
                 });
 
             } catch (error) {
@@ -149,25 +230,73 @@
 
         const setContent = (html) => {
             document.getElementById('content').innerHTML = html;
+            lucide.createIcons(); // Inizializza le icone dopo il rendering
+        };
+        
+        const renderGlobalAccess = (message = '') => {
+            document.getElementById('header-title').textContent = "Accesso alla Lega";
+            const globalAccessHtml = `
+                <div class="max-w-md mx-auto p-8 bg-white rounded-xl shadow-xl border border-gray-100">
+                    <h2 class="text-2xl font-bold text-center text-gray-800 mb-6">Accesso Riservato</h2>
+                    ${message ? `<div class="error-message">${message}</div>` : ''}
+                    <form id="global-access-form" class="space-y-6">
+                        <div>
+                            <label for="globalPassword" class="block text-sm font-medium text-gray-700 mb-1">Password d'Accesso alla Lega</label>
+                            <div class="relative">
+                                <i data-lucide="key" class="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-yellow-600"></i>
+                                <input type="password" id="globalPassword" required class="input-style mt-1 pl-10" placeholder="Inserisci la password globale">
+                            </div>
+                        </div>
+                        <button type="submit" class="btn-secondary w-full bg-yellow-500 hover:bg-yellow-600">
+                            <i data-lucide="unlock" class="w-5 h-5"></i>
+                            Sblocca Lega
+                        </button>
+                    </form>
+                </div>
+            `;
+            setContent(globalAccessHtml);
+            document.getElementById('global-access-form').addEventListener('submit', handleGlobalAccess);
+        };
+        window.renderGlobalAccess = renderGlobalAccess; // Esposizione per l'uso interno
+
+        const handleGlobalAccess = (e) => {
+            e.preventDefault();
+            const password = document.getElementById('globalPassword').value.trim();
+
+            if (password === GLOBAL_ACCESS_PASSWORD) {
+                hasGlobalAccess = true;
+                renderLogin();
+            } else {
+                renderGlobalAccess("Password errata. Riprova.");
+            }
         };
 
         const renderLogin = (message = '') => {
             document.getElementById('header-title').textContent = "Accesso alla Lega Fantacalcio";
             const loginHtml = `
-                <div class="max-w-md mx-auto p-6 bg-gray-50 rounded-lg">
+                <div class="max-w-md mx-auto p-8 bg-white rounded-xl shadow-xl border border-gray-100">
                     ${message ? `<div class="error-message">${message}</div>` : ''}
-                    <form id="login-form" class="space-y-4">
+                    <form id="login-form" class="space-y-6">
                         <div>
-                            <label for="teamName" class="block text-sm font-medium text-gray-700">Di che squadra sei il presidente?</label>
-                            <input type="text" id="teamName" required class="input-style mt-1" placeholder="Nome Squadra (es. 'Magic Team')" autocomplete="off">
+                            <label for="teamName" class="block text-sm font-medium text-gray-700 mb-1">Di che squadra sei il presidente?</label>
+                            <div class="relative">
+                                <i data-lucide="shield" class="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-blue-500"></i>
+                                <input type="text" id="teamName" required class="input-style mt-1 pl-10" placeholder="Nome Squadra (es. 'Magic Team')" autocomplete="off">
+                            </div>
                         </div>
                         <div>
-                            <label for="password" class="block text-sm font-medium text-gray-700">Password</label>
-                            <input type="password" id="password" required class="input-style mt-1" placeholder="Inserisci la password">
+                            <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                            <div class="relative">
+                                <i data-lucide="lock" class="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-blue-500"></i>
+                                <input type="password" id="password" required class="input-style mt-1 pl-10" placeholder="Inserisci la password">
+                            </div>
                         </div>
-                        <button type="submit" class="btn-primary w-full">Accedi o Registrati</button>
+                        <button type="submit" class="btn-primary w-full">
+                            <i data-lucide="log-in" class="w-5 h-5"></i>
+                            Accedi o Registrati
+                        </button>
                     </form>
-                    <p class="mt-4 text-xs text-gray-500 text-center">ID Utente Firebase: <span class="font-mono text-xs text-green-700 break-all">${userId || 'N/A'}</span></p>
+                    <p class="mt-6 text-xs text-gray-500 text-center">ID Utente Firebase: <span class="font-mono text-xs text-green-600 break-all">${userId || 'N/A'}</span></p>
                 </div>
             `;
             setContent(loginHtml);
@@ -177,40 +306,53 @@
         const renderHomepage = () => {
             if (!currentTeam) return renderLogin("Errore: Dati squadra non disponibili.");
 
-            document.getElementById('header-title').textContent = `Homepage Squadra: ${currentTeam.name}`;
+            document.getElementById('header-title').textContent = `${currentTeam.name} - Homepage`;
 
             // Lista dei giocatori
             const playersListHtml = currentTeam.players && currentTeam.players.length > 0
                 ? currentTeam.players.map(p => `
-                    <li class="p-3 bg-white rounded-lg border border-gray-200 flex justify-between items-center text-gray-700">
-                        <!-- Mostra il livello finale se presente, altrimenti il range (per i vecchi dati) -->
-                        <span>${p.name} - ${p.role} 
-                            (${p.level ? 'Livello: ' + p.level : 'Range: ' + p.minLevel + '/' + p.maxLevel})
+                    <li class="p-3 bg-gray-50 rounded-lg border border-gray-200 flex justify-between items-center text-gray-700 shadow-sm">
+                        <span>
+                            <i data-lucide="user" class="inline w-4 h-4 mr-2 text-blue-500"></i>
+                            ${p.name} - ${p.role} 
+                            ${p.level ? `(Livello: <span class="font-bold text-green-600">${p.level}</span>)` : `(Range: ${p.minLevel}/${p.maxLevel})`}
                         </span>
-                        <button onclick="window.removePlayerFromTeam('${p.id || p.name}')" class="text-red-500 hover:text-red-700 text-sm">Rimuovi</button>
+                        <!-- PULSANTE RIMOSSO: Gli utenti standard non possono rimuovere i giocatori -->
                     </li>
                 `).join('')
-                : '<li class="text-center text-gray-500 p-4">Ancora nessun giocatore in squadra. Vai al Draft!</li>';
+                : '<li class="text-center text-gray-500 p-4 bg-gray-100 rounded-lg border border-gray-200">Ancora nessun giocatore in squadra. Vai al Draft!</li>';
 
             const homepageHtml = `
-                <div class="space-y-6">
-                    <div class="p-5 bg-blue-50 rounded-xl border border-blue-200">
-                        <h2 class="text-xl font-semibold text-blue-800 mb-2">I Miei Dettagli</h2>
-                        <p class="text-gray-700">Nome Squadra (Login): <span class="font-mono bg-blue-100 px-2 py-1 rounded text-sm">${currentTeam.name}</span></p>
-                        <div class="mt-3">
-                            <label for="presidentName" class="block text-sm font-medium text-gray-700">Nome Presidente (Modificabile)</label>
-                            <input type="text" id="presidentName" value="${currentTeam.presidentName}" class="input-style mt-1 max-w-sm" onchange="updatePresidentName(this.value)">
+                <div class="space-y-8">
+                    <div class="p-6 bg-blue-50 rounded-xl border border-blue-200 shadow-lg">
+                        <h2 class="text-xl font-bold text-blue-700 mb-3 flex items-center">
+                            <i data-lucide="badge-check" class="w-5 h-5 mr-2 text-blue-500"></i>
+                            I Miei Dettagli Squadra
+                        </h2>
+                        <p class="text-gray-700 mb-4">Nome Squadra (Login): <span class="font-mono bg-blue-100 px-2 py-1 rounded text-sm text-blue-700">${currentTeam.name}</span></p>
+                        <div class="mt-4">
+                            <label for="presidentName" class="block text-sm font-medium text-gray-700 mb-1">Nome Presidente (Modificabile)</label>
+                            <input type="text" id="presidentName" value="${currentTeam.presidentName}" class="input-style max-w-md" onchange="updatePresidentName(this.value)">
                         </div>
                     </div>
 
-                    <div class="flex flex-col sm:flex-row gap-4">
-                        <button onclick="renderDraft()" class="btn-secondary flex-1">Vai al Draft 🚀</button>
-                        <button onclick="logout()" class="btn-secondary bg-red-500 hover:bg-red-600 flex-1">Logout</button>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <button onclick="renderDraft()" class="btn-primary">
+                            <i data-lucide="rocket" class="w-5 h-5"></i>
+                            Area Draft
+                        </button>
+                        <button onclick="logout()" class="btn-secondary bg-red-500 hover:bg-red-600">
+                            <i data-lucide="log-out" class="w-5 h-5"></i>
+                            Logout
+                        </button>
                     </div>
 
                     <div>
-                        <h2 class="text-xl font-semibold text-gray-800 mb-3">Rosa Giocatori</h2>
-                        <ul id="players-list" class="space-y-2">
+                        <h2 class="text-xl font-bold text-gray-700 mb-4 flex items-center">
+                            <i data-lucide="users" class="w-5 h-5 mr-2 text-green-500"></i>
+                            Rosa Giocatori
+                        </h2>
+                        <ul id="players-list" class="space-y-3">
                             ${playersListHtml}
                         </ul>
                     </div>
@@ -224,40 +366,49 @@
 
             if (!draftPlayers || draftPlayers.length === 0) {
                 setContent(`
-                    <button onclick="renderHomepage()" class="btn-secondary bg-gray-500 hover:bg-gray-600 mb-6">← Torna alla Homepage</button>
-                    <div class="text-center text-gray-500 p-8">Nessun giocatore disponibile nel draft al momento.</div>
+                    <button onclick="renderHomepage()" class="btn-secondary bg-gray-500 hover:bg-gray-600 mb-6">
+                        <i data-lucide="arrow-left" class="w-5 h-5"></i>
+                        Torna alla Homepage
+                    </button>
+                    <div class="text-center text-gray-500 p-8 bg-gray-100 rounded-xl border border-gray-200">Nessun giocatore disponibile nel draft al momento.</div>
                 `);
                 return;
             }
 
             const draftHtml = `
                 <div class="space-y-6">
-                    <button onclick="renderHomepage()" class="btn-secondary bg-gray-500 hover:bg-gray-600">← Torna alla Homepage</button>
+                    <button onclick="renderHomepage()" class="btn-secondary bg-gray-500 hover:bg-gray-600">
+                        <i data-lucide="arrow-left" class="w-5 h-5"></i>
+                        Torna alla Homepage
+                    </button>
                     
-                    <div class="bg-yellow-50 p-4 rounded-xl border border-yellow-200">
-                        <p class="text-sm font-semibold text-yellow-800">Seleziona un giocatore per aggiungerlo alla tua rosa. Sarà immediatamente rimosso dal draft per tutti.</p>
+                    <div class="p-4 rounded-xl border border-yellow-400 bg-yellow-100 text-yellow-800">
+                        <p class="text-sm font-semibold flex items-center">
+                            <i data-lucide="alert-triangle" class="w-5 h-5 mr-2"></i>
+                            Seleziona un giocatore. Il suo livello verrà estratto casualmente dal range Min/Max.
+                        </p>
                     </div>
 
                     <div class="overflow-x-auto">
-                        <table class="min-w-full divide-y divide-gray-200 rounded-lg overflow-hidden">
+                        <table class="min-w-full divide-y divide-gray-200 rounded-lg overflow-hidden border border-gray-200">
                             <thead class="bg-gray-100">
                                 <tr>
-                                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nome</th>
-                                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ruolo</th>
-                                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Età</th>
-                                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Livello (Min/Max)</th>
-                                    <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Azione</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nome</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ruolo</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Età</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Livello (Min/Max)</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Azione</th>
                                 </tr>
                             </thead>
                             <tbody class="bg-white divide-y divide-gray-200" id="draft-players-table">
                                 ${draftPlayers.map(p => `
-                                    <tr class="hover:bg-green-50 transition duration-100">
-                                        <td class="px-3 py-3 whitespace-nowrap text-sm font-medium text-gray-900">${p.name}</td>
-                                        <td class="px-3 py-3 whitespace-nowrap text-sm text-gray-500">${p.role}</td>
-                                        <td class="px-3 py-3 whitespace-nowrap text-sm text-gray-500">${p.age}</td>
-                                        <td class="px-3 py-3 whitespace-nowrap text-sm text-gray-500">${p.minLevel} / ${p.maxLevel}</td>
-                                        <td class="px-3 py-3 whitespace-nowrap text-sm font-medium">
-                                            <button onclick="draftPlayer('${p.id}')" class="bg-green-500 hover:bg-green-600 text-white text-xs font-bold py-1 px-3 rounded-full">
+                                    <tr class="text-gray-700 hover:bg-green-50 transition duration-100">
+                                        <td class="px-4 py-3 whitespace-nowrap text-sm font-medium">${p.name}</td>
+                                        <td class="px-4 py-3 whitespace-nowrap text-sm">${p.role}</td>
+                                        <td class="px-4 py-3 whitespace-nowrap text-sm">${p.age}</td>
+                                        <td class="px-4 py-3 whitespace-nowrap text-sm font-semibold text-primary-color">${p.minLevel} / ${p.maxLevel}</td>
+                                        <td class="px-4 py-3 whitespace-nowrap text-sm font-medium">
+                                            <button onclick="draftPlayer('${p.id}')" class="bg-green-500 hover:bg-green-600 text-white text-xs font-bold py-2 px-4 rounded-full transition duration-150">
                                                 Drafta
                                             </button>
                                         </td>
@@ -270,6 +421,55 @@
             `;
             setContent(draftHtml);
         };
+        
+        // Nuova vista per l'Admin per gestire la rosa di una squadra specifica
+        const renderAdminTeamView = (teamId) => {
+            const team = teams.find(t => t.id === teamId);
+            if (!team) return renderAdmin();
+
+            document.getElementById('header-title').textContent = `Admin: Gestione Rosa di ${team.name}`;
+
+            const playersListHtml = team.players && team.players.length > 0
+                ? team.players.map(p => `
+                    <li class="p-3 bg-white rounded-lg border border-gray-200 flex justify-between items-center text-gray-700 shadow-sm">
+                        <span>
+                            <i data-lucide="user" class="inline w-4 h-4 mr-2 text-blue-500"></i>
+                            ${p.name} - ${p.role} (Livello: <span class="font-bold text-green-600">${p.level || 'N/D'}</span>)
+                        </span>
+                        <button onclick="window.removePlayerFromTeamAdmin('${teamId}', '${p.id}', '${p.name}', ${p.minLevel}, ${p.maxLevel})" class="text-red-500 hover:text-red-700 text-sm font-semibold transition">
+                            <i data-lucide="trash-2" class="inline w-4 h-4"></i> Rimuovi
+                        </button>
+                    </li>
+                `).join('')
+                : '<li class="text-center text-gray-500 p-4 bg-gray-100 rounded-lg border border-gray-200">Questa squadra non ha giocatori.</li>';
+
+            const teamViewHtml = `
+                <div class="space-y-6">
+                    <button onclick="renderAdmin()" class="btn-secondary bg-gray-500 hover:bg-gray-600">
+                        <i data-lucide="arrow-left" class="w-5 h-5"></i>
+                        Torna all'Area Admin
+                    </button>
+                    
+                    <div class="p-6 bg-blue-50 rounded-xl border border-blue-200 shadow-lg">
+                        <h3 class="text-xl font-bold text-blue-700 mb-2">Dettagli Squadra</h3>
+                        <p>Presidente: ${team.presidentName}</p>
+                        <p>Giocatori in rosa: ${team.players ? team.players.length : 0}</p>
+                    </div>
+
+                    <div>
+                        <h3 class="text-xl font-bold text-gray-700 mb-4 flex items-center">
+                            <i data-lucide="users" class="w-5 h-5 mr-2 text-red-500"></i>
+                            Rosa Attuale (Rimuovi Giocatori)
+                        </h3>
+                        <ul class="space-y-3">
+                            ${playersListHtml}
+                        </ul>
+                    </div>
+                </div>
+            `;
+            setContent(teamViewHtml);
+        };
+        window.renderAdminTeamView = renderAdminTeamView;
 
         const renderAdmin = () => {
             document.getElementById('header-title').textContent = "Area Admin (serieseria)";
@@ -277,52 +477,79 @@
             // Lista di tutte le squadre registrate
             const teamsListHtml = teams.length > 0
                 ? teams.map(t => `
-                    <li class="p-3 bg-white rounded-lg border border-gray-200 text-gray-700">
-                        <strong class="text-blue-600">${t.name}</strong> - Presidente: ${t.presidentName} (${t.players ? t.players.length : 0} gioc.)
-                        <div class="text-xs text-gray-500 mt-1 break-all">Doc ID: ${t.id}</div>
+                    <li class="p-3 bg-white rounded-lg border border-gray-200 flex flex-col md:flex-row justify-between items-center space-y-2 md:space-y-0 text-gray-700 shadow-sm">
+                        <div class="flex-grow text-left w-full md:w-auto">
+                            <strong class="text-blue-600">${t.name}</strong> - Presidente: ${t.presidentName} (${t.players ? t.players.length : 0} gioc.)
+                            <div class="text-xs text-gray-500 mt-1 break-all">Doc ID: ${t.id}</div>
+                        </div>
+                        <div class="flex space-x-2">
+                            <button onclick="window.renderAdminTeamView('${t.id}')" class="bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-bold py-2 px-4 rounded-full transition duration-150">
+                                <i data-lucide="eye" class="inline w-4 h-4"></i> Gestisci Rosa
+                            </button>
+                            <button onclick="window.removeTeam('${t.id}', '${t.name}')" class="bg-red-500 hover:bg-red-600 text-white text-xs font-bold py-2 px-4 rounded-full transition duration-150">
+                                <i data-lucide="trash-2" class="inline w-4 h-4"></i> Rimuovi Squadra
+                            </button>
+                        </div>
                     </li>
                 `).join('')
-                : '<li class="text-center text-gray-500 p-4">Nessuna squadra registrata.</li>';
+                : '<li class="text-center text-gray-500 p-4 bg-gray-100 rounded-lg border border-gray-200">Nessuna squadra registrata.</li>';
             
             // Lista dei giocatori nel draft con opzione di rimozione
             const draftListHtml = draftPlayers.length > 0
                 ? draftPlayers.map(p => `
                     <li class="p-3 bg-white rounded-lg border border-gray-200 flex justify-between items-center text-gray-700">
                         <span>${p.name} - ${p.role} (Liv. ${p.minLevel}/${p.maxLevel})</span>
-                        <button onclick="removeDraftPlayer('${p.id}')" class="text-red-500 hover:text-red-700 text-sm font-semibold">Rimuovi</button>
+                        <button onclick="removeDraftPlayer('${p.id}')" class="text-red-500 hover:text-red-700 text-sm font-semibold transition">
+                            <i data-lucide="trash-2" class="inline w-4 h-4 mr-1"></i> Rimuovi
+                        </button>
                     </li>
                 `).join('')
-                : '<li class="text-center text-gray-500 p-4">Il draft è vuoto. Aggiungi un giocatore!</li>';
+                : '<li class="text-center text-gray-500 p-4 bg-gray-100 rounded-lg border border-gray-200">Il draft è vuoto. Aggiungi un giocatore!</li>';
 
             const adminHtml = `
                 <div class="space-y-8">
-                    <button onclick="logout()" class="btn-secondary bg-red-500 hover:bg-red-600">Logout Admin</button>
+                    <button onclick="logout()" class="btn-secondary bg-red-500 hover:bg-red-600">
+                        <i data-lucide="log-out" class="w-5 h-5"></i>
+                        Logout Admin
+                    </button>
                     
                     <!-- Aggiungi Giocatore al Draft -->
-                    <div class="p-5 bg-green-50 rounded-xl border border-green-200">
-                        <h2 class="text-xl font-semibold text-green-800 mb-4">Aggiungi Giocatore al Draft</h2>
-                        <form id="add-player-form" class="space-y-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div class="p-6 bg-green-50 rounded-xl border border-green-200 shadow-lg">
+                        <h2 class="text-xl font-bold text-green-700 mb-4 flex items-center">
+                            <i data-lucide="plus-circle" class="w-5 h-5 mr-2 text-green-500"></i>
+                            Aggiungi Giocatore al Draft
+                        </h2>
+                        <form id="add-player-form" class="space-y-4 grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div><input type="text" id="pName" placeholder="Nome Giocatore" required class="input-style"></div>
                             <div><input type="text" id="pRole" placeholder="Ruolo (es. Att, Cen, Dif)" required class="input-style"></div>
                             <div><input type="number" id="pAge" placeholder="Età" min="15" max="50" required class="input-style"></div>
                             <div><input type="number" id="pMinLevel" placeholder="Livello Min (1-15)" min="1" max="15" required class="input-style"></div>
                             <div><input type="number" id="pMaxLevel" placeholder="Livello Max (1-15)" min="1" max="15" required class="input-style"></div>
-                            <button type="submit" class="btn-primary col-span-1 md:col-span-2">Aggiungi Giocatore</button>
+                            <button type="submit" class="btn-primary col-span-1 md:col-span-2">
+                                <i data-lucide="send" class="w-5 h-5"></i>
+                                Aggiungi Giocatore
+                            </button>
                         </form>
                     </div>
 
                     <!-- Giocatori Attuali nel Draft -->
-                    <div class="p-5 bg-white rounded-xl border border-gray-200">
-                        <h2 class="text-xl font-semibold text-gray-800 mb-3">Giocatori nel Draft (${draftPlayers.length})</h2>
-                        <ul class="space-y-2 max-h-64 overflow-y-auto">
+                    <div class="p-6 bg-white rounded-xl border border-gray-200 shadow-lg">
+                        <h2 class="text-xl font-bold text-gray-700 mb-4 flex items-center">
+                            <i data-lucide="list-checks" class="w-5 h-5 mr-2 text-blue-500"></i>
+                            Giocatori nel Draft (${draftPlayers.length})
+                        </h2>
+                        <ul class="space-y-3 max-h-64 overflow-y-auto">
                             ${draftListHtml}
                         </ul>
                     </div>
 
                     <!-- Squadre Registrate -->
-                    <div class="p-5 bg-white rounded-xl border border-gray-200">
-                        <h2 class="text-xl font-semibold text-gray-800 mb-3">Tutte le Squadre Registrate (${teams.length})</h2>
-                        <ul class="space-y-2 max-h-64 overflow-y-auto">
+                    <div class="p-6 bg-white rounded-xl border border-gray-200 shadow-lg">
+                        <h2 class="text-xl font-bold text-gray-700 mb-4 flex items-center">
+                            <i data-lucide="shield-half" class="w-5 h-5 mr-2 text-yellow-500"></i>
+                            Gestione Squadre Registrate (${teams.length})
+                        </h2>
+                        <ul class="space-y-3 max-h-96 overflow-y-auto">
                             ${teamsListHtml}
                         </ul>
                     </div>
@@ -348,7 +575,6 @@
             }
 
             // 2. Caso Squadra Utente
-            const TEAM_COLLECTION_NAME = 'teams';
             try {
                 const teamsRef = getPublicCollectionRef(TEAM_COLLECTION_NAME);
                 const q = query(teamsRef, where("name", "==", teamName));
@@ -397,12 +623,13 @@
             currentTeam = null;
             // Interrompe tutti i listener attivi
             stopAllListeners();
-            renderLogin("Sei stato disconnesso.");
+            // Dopo il logout, si torna alla schermata di accesso globale per richiedere la password di lega.
+            hasGlobalAccess = false;
+            renderGlobalAccess("Logout effettuato.");
         };
 
         window.updatePresidentName = async (newName) => {
             if (!currentTeam || currentTeam.isAdmin) return;
-            const TEAM_COLLECTION_NAME = 'teams';
             const newNameTrimmed = newName.trim();
             if (newNameTrimmed === currentTeam.presidentName || newNameTrimmed === "") return;
 
@@ -433,19 +660,30 @@
         const startDataListeners = () => {
             stopAllListeners();
 
-            const PLAYER_COLLECTION_NAME = 'draft_players';
-            const TEAM_COLLECTION_NAME = 'teams';
-
             if (currentTeam.isAdmin) {
                 // Admin: ascolta tutte le squadre e tutti i giocatori
                 draftUnsub = onSnapshot(getPublicCollectionRef(PLAYER_COLLECTION_NAME), (snapshot) => {
                     draftPlayers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    if (document.getElementById('header-title').textContent.includes('Area Admin')) renderAdmin(); 
+                    // Ricarica la vista Admin solo se l'admin è sulla pagina principale o sulla gestione draft
+                    const currentTitle = document.getElementById('header-title').textContent;
+                    if (currentTitle.includes('Area Admin') && !currentTitle.includes('Gestione Rosa')) renderAdmin(); 
                 }, (error) => console.error("Errore listener draft admin:", error));
 
                 teamsUnsub = onSnapshot(getPublicCollectionRef(TEAM_COLLECTION_NAME), (snapshot) => {
                     teams = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    if (document.getElementById('header-title').textContent.includes('Area Admin')) renderAdmin(); 
+                    // Ricarica la vista Admin se l'admin è su una vista rilevante
+                    const currentTitle = document.getElementById('header-title').textContent;
+                    if (currentTitle.includes('Area Admin')) {
+                        // Se l'admin è su una vista di gestione squadra specifica, ricarica quella
+                        const teamNameMatch = currentTitle.match(/Gestione Rosa di (.*)/);
+                        if (teamNameMatch) {
+                            const teamName = teamNameMatch[1];
+                            const team = teams.find(t => t.name === teamName);
+                            if (team) renderAdminTeamView(team.id);
+                        } else {
+                             renderAdmin(); 
+                        }
+                    }
                 }, (error) => console.error("Errore listener teams admin:", error));
 
             } else {
@@ -461,6 +699,7 @@
                             currentTeam = { id: docSnapshot.id, ...docSnapshot.data() };
                             if (document.getElementById('header-title').textContent.includes('Homepage Squadra')) renderHomepage();
                         } else {
+                            // Se la squadra viene eliminata dall'admin, l'utente viene disconnesso
                             logout();
                         }
                     }, (error) => console.error("Errore listener squadra utente:", error));
@@ -469,9 +708,7 @@
         };
 
 
-        // --- FUNZIONI ADMIN (Aggiunta/Rimozione Giocatori) ---
-
-        const PLAYER_COLLECTION_NAME = 'draft_players';
+        // --- FUNZIONI ADMIN (Gestione Dati) ---
 
         const addDraftPlayer = async (e) => {
             e.preventDefault();
@@ -485,7 +722,6 @@
                 maxLevel: parseInt(document.getElementById('pMaxLevel').value),
                 available: true,
                 createdAt: serverTimestamp(),
-                // L'ID del giocatore è l'ID del documento creato da addDoc
             };
 
             if (!newPlayer.name || !newPlayer.role || isNaN(newPlayer.age) || isNaN(newPlayer.minLevel) || isNaN(newPlayer.maxLevel)) {
@@ -512,14 +748,87 @@
                 alert("Errore nella rimozione del giocatore.");
             }
         };
+        
+        /**
+         * Funzione per l'Admin per rimuovere un giocatore da una specifica rosa E reinserirlo nel draft.
+         * @param {string} teamId - ID del documento della squadra.
+         * @param {string} playerIdToRemove - ID (o nome, come fallback) del giocatore da rimuovere.
+         * @param {string} playerName - Nome del giocatore per il reinserimento.
+         * @param {number} minLevel - Livello min per il reinserimento.
+         * @param {number} maxLevel - Livello max per il reinserimento.
+         */
+        window.removePlayerFromTeamAdmin = async (teamId, playerIdToRemove, playerName, minLevel, maxLevel) => {
+             if (!currentTeam || !currentTeam.isAdmin) return;
+             
+             // 1. RIMUOVI DALLA ROSA
+             const teamData = teams.find(t => t.id === teamId);
+             if (!teamData || !teamData.players) return;
+             
+             const indexToRemove = teamData.players.findIndex(p => p.id === playerIdToRemove || p.name === playerIdToRemove);
+             if (indexToRemove === -1) return; 
+
+             const updatedPlayers = [...teamData.players];
+             const removedPlayer = updatedPlayers.splice(indexToRemove, 1)[0]; // Cattura il giocatore rimosso
+             
+             // Estrai l'età del giocatore rimosso per il reinserimento
+             const playerAge = removedPlayer.age || 25; // Usa un valore di default se l'età non è salvata (dovrebbe esserlo)
+
+
+            try {
+                const teamDocRef = doc(getPublicCollectionRef(TEAM_COLLECTION_NAME), teamId);
+                await updateDoc(teamDocRef, { players: updatedPlayers });
+
+                // 2. REINSERISCI NEL DRAFT
+                if (removedPlayer) {
+                    const playerDraftData = {
+                        name: removedPlayer.name, 
+                        role: removedPlayer.role,
+                        age: playerAge, 
+                        minLevel: removedPlayer.minLevel,
+                        maxLevel: removedPlayer.maxLevel,
+                        available: true,
+                        createdAt: serverTimestamp(), // Si assicura che il server timestamp sia aggiornato
+                    };
+
+                    await addDoc(getPublicCollectionRef(PLAYER_COLLECTION_NAME), playerDraftData);
+                }
+
+                // Il listener onSnapshot aggiornerà la vista automaticamente
+            } catch (error) {
+                console.error("Errore Admin nella rimozione/reinserimento del giocatore:", error);
+                alert("Errore Admin nell'operazione. Controlla la console.");
+            }
+        };
+        
+        /**
+         * Funzione per l'Admin per rimuovere un'intera squadra registrata.
+         * Utilizza il modale custom per la conferma.
+         * @param {string} teamId - ID del documento della squadra da rimuovere.
+         * @param {string} teamName - Nome della squadra per la conferma.
+         */
+        window.removeTeam = async (teamId, teamName) => {
+            if (!currentTeam || !currentTeam.isAdmin) return;
+            
+            const confirmation = await showConfirmationModal(`Sei sicuro di voler rimuovere la squadra '${teamName}'? L'operazione è irreversibile e disconnetterà l'utente.`);
+            if (!confirmation) return;
+
+            try {
+                const teamDocRef = doc(getPublicCollectionRef(TEAM_COLLECTION_NAME), teamId);
+                await deleteDoc(teamDocRef);
+                // La disconnessione e l'aggiornamento della lista squadre sono gestiti dai listener onSnapshot
+            } catch (error) {
+                console.error("Errore nella rimozione della squadra:", error);
+                alert(`Errore nella rimozione della squadra '${teamName}'. Controlla la console.`);
+            }
+        };
+
 
         // --- FUNZIONI UTENTE (Draft) ---
+        // La funzione window.removePlayerFromTeam è stata rimossa, in linea con la richiesta.
 
         window.draftPlayer = async (playerId) => {
             if (!currentTeam || currentTeam.isAdmin) return;
-            const PLAYER_COLLECTION_NAME = 'draft_players';
-            const TEAM_COLLECTION_NAME = 'teams';
-
+            
             // Cerchiamo l'oggetto completo del giocatore dal cache locale
             const playerToDraft = draftPlayers.find(p => p.id === playerId);
             if (!playerToDraft) {
@@ -550,11 +859,11 @@
                         id: playerId, 
                         name: playerToDraft.name,
                         role: playerToDraft.role,
+                        age: playerToDraft.age,
                         minLevel: playerToDraft.minLevel,
                         maxLevel: playerToDraft.maxLevel,
-                        // *************** AGGIUNTA LOGICA LIVELLO CASUALE ***************
+                        // Generazione del livello casuale
                         level: getRandomLevel(playerToDraft.minLevel, playerToDraft.maxLevel),
-                        // ***************************************************************
                         teamId: currentTeam.id, 
                         draftedAt: new Date().toISOString(), 
                     };
@@ -581,27 +890,6 @@
             }
         };
         
-        window.removePlayerFromTeam = async (playerIdOrName) => {
-             if (!currentTeam || currentTeam.isAdmin || !currentTeam.players) return;
-             const TEAM_COLLECTION_NAME = 'teams';
-             
-             // Cerchiamo l'indice del giocatore basandoci sull'ID (se presente) o sul nome (come fallback)
-             const indexToRemove = currentTeam.players.findIndex(p => p.id === playerIdOrName || p.name === playerIdOrName);
-             
-             if (indexToRemove === -1) return; 
-
-             const updatedPlayers = [...currentTeam.players];
-             updatedPlayers.splice(indexToRemove, 1); 
-
-            try {
-                const teamDocRef = doc(getPublicCollectionRef(TEAM_COLLECTION_NAME), currentTeam.id);
-                await updateDoc(teamDocRef, { players: updatedPlayers });
-            } catch (error) {
-                console.error("Errore nella rimozione del giocatore dalla squadra:", error);
-                alert("Errore nella rimozione del giocatore.");
-            }
-        };
-
         // --- INIZIO APPLICAZIONE ---
         initializeFirebase();
 
@@ -609,7 +897,9 @@
         window.renderDraft = renderDraft;
         window.renderHomepage = renderHomepage;
         window.draftPlayer = draftPlayer;
-        window.removePlayerFromTeam = removePlayerFromTeam;
+        window.renderAdmin = renderAdmin;
+        window.removeTeam = removeTeam; 
+        window.removePlayerFromTeamAdmin = removePlayerFromTeamAdmin; 
 
     </script>
 </body>
