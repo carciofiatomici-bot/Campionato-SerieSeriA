@@ -259,7 +259,7 @@ const renderLogin = (message = '') => {
                     <label for="teamName" class="block text-sm font-medium text-gray-700 mb-1">Di che squadra sei il presidente?</label>
                     <div class="relative">
                         <i data-lucide="shield" class="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-blue-500"></i>
-                        <input type="text" id="teamName" required class="input-style mt-1 pl-10" placeholder="Nome Squadra (es. 'Magic Team')" autocomplete="off">
+                        <input type="text" id="teamName" required class="input-style mt-1 pl-10" placeholder="Nome Squadra (senza spazi)" autocomplete="off">
                     </div>
                 </div>
                 <div>
