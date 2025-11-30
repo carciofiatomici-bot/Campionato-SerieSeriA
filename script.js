@@ -22,7 +22,7 @@ const rawFirebaseConfig = {
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : rawFirebaseConfig;
 
 // VARIABILE GLOBALE DI ACCESSO
-const GLOBAL_ACCESS_PASSWORD = 'scarso';
+const GLOBAL_ACCESS_PASSWORD = 'gladio';
 
 // Variabili Globali
 let app;
@@ -211,7 +211,7 @@ const setContent = (html) => {
 };
 
 const renderGlobalAccess = (message = '') => {
-    document.getElementById('header-title').textContent = "Accesso alla Lega";
+    document.getElementById('header-title').textContent = "Accesso alla Lega Seria";
     const globalAccessHtml = `
         <div class="max-w-md mx-auto p-8 bg-white rounded-xl shadow-xl border border-gray-100">
             <h2 class="text-2xl font-bold text-center text-gray-800 mb-6">Accesso Riservato</h2>
@@ -250,7 +250,7 @@ const handleGlobalAccess = (e) => {
 };
 
 const renderLogin = (message = '') => {
-    document.getElementById('header-title').textContent = "Accesso alla Lega Fantacalcio";
+    document.getElementById('header-title').textContent = "Accesso al Draft Serio";
     const loginHtml = `
         <div class="max-w-md mx-auto p-8 bg-white rounded-xl shadow-xl border border-gray-100">
             ${message ? `<div class="error-message">${message}</div>` : ''}
