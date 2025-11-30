@@ -31,14 +31,32 @@ let auth;
 let userId = null;
 let currentTeam = null;
 let isAuthReady = false;
-let teams = []; // Cache di tutte le squadre per l'admin
+let teams = []; // Cache di tutte le squadre per l'admin e la visualizzazione del draft
 let draftPlayers = []; // Cache dei giocatori disponibili per il draft
 let hasGlobalAccess = false; // Nuovo stato di accesso globale
+
+// Stato locale per il draft (Include ora draftOrder, currentTurnIndex e roundNumber)
+let draftStatus = { 
+    isDraftActive: false,
+    draftOrder: [], // Array di ID squadra in ordine di draft
+    currentTurnIndex: 0, // Indice della squadra che deve draftare
+    roundNumber: 1 // NUOVO: Traccia il round attuale (per reset)
+}; 
 
 // Configurazione dell'ID dell'App per i percorsi Firestore
 const appId = typeof __app_id !== 'undefined' ? __app_id : firebaseConfig.projectId;
 const PLAYER_COLLECTION_NAME = 'draft_players';
 const TEAM_COLLECTION_NAME = 'teams';
+const DRAFT_STATUS_DOC_NAME = 'config/draft_status'; // Path del documento per lo stato del draft
+// Limite di 1 giocatore per turno
+const MAX_PLAYERS_PER_TEAM_PER_ROUND = 1; 
+// Limite totale per la rosa (utilizzato solo per la visualizzazione)
+const FINAL_ROSTER_SIZE = 99; 
+
+// LINK ESTERNI PER CLASSIFICA E RISULTATI (SOSTITUISCI QUESTI CON I TUOI LINK REALI)
+const CLASSIFICA_IMAGE_URL = 'https://i.imgur.com/example_classifica.png'; // SOSTITUISCI QUI!
+const RISULTATI_IMAGE_URL = 'https://i.imgur.com/example_risultati.png';   // SOSTITUISCI QUI!
+
 
 // --- FUNZIONE UTILITY PER LIVELLO CASUALE ---
 
@@ -54,6 +72,19 @@ const getRandomLevel = (min, max) => {
     // Math.random() * (max - min + 1) genera un numero tra 0 e (max - min + 1)
     // Math.floor(...) lo arrotonda per difetto, + min sposta il range.
     return Math.floor(Math.random() * (max - min + 1)) + min;
+};
+
+/**
+ * Genera un ordine casuale per l'array di ID squadra.
+ * @param {Array<string>} teamIds - Array di ID squadra.
+ * @returns {Array<string>} Array di ID squadra mischiato.
+ */
+const shuffleArray = (array) => {
+    for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+    }
+    return array;
 };
 
 // --- FUNZIONE UTILITY PER MODALE DI CONFERMA CUSTOM ---
@@ -153,6 +184,25 @@ const getPublicCollectionRef = (collectionName) => {
     return collection(db, `artifacts/${appId}/public/data/${collectionName}`);
 };
 
+// Path per il documento di stato del draft
+const getDraftStatusDocRef = () => {
+    // Path: artifacts/{appId}/public/data/config/draft_status
+    return doc(db, `artifacts/${appId}/public/data/${DRAFT_STATUS_DOC_NAME}`);
+};
+
+/**
+ * Carica in modo esplicito la lista delle squadre se la cache locale `teams` è vuota o per un refresh garantito.
+ */
+const fetchTeams = async () => {
+    try {
+        const teamsSnapshot = await getDocs(getPublicCollectionRef(TEAM_COLLECTION_NAME));
+        teams = teamsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (error) {
+        console.error("Errore nel caricamento esplicito delle squadre:", error);
+        teams = [];
+    }
+};
+
 // --- FUNZIONI DI RENDERIZZAZIONE ---
 
 const setContent = (html) => {
@@ -192,6 +242,7 @@ const handleGlobalAccess = (e) => {
 
     if (password === GLOBAL_ACCESS_PASSWORD) {
         hasGlobalAccess = true;
+        startDataListeners(); // Inizializza i listener anche qui per avere subito lo stato del draft
         renderLogin();
     } else {
         renderGlobalAccess("Password errata. Riprova.");
@@ -223,6 +274,21 @@ const renderLogin = (message = '') => {
                     Accedi o Registrati
                 </button>
             </form>
+
+            <div class="space-y-4 mt-6">
+                <p class="text-lg font-bold text-gray-700 text-center border-t pt-4">Info Lega</p>
+                
+                <a href="${CLASSIFICA_IMAGE_URL}" target="_blank" class="w-full text-white font-semibold py-2 px-4 rounded-lg transition duration-150 bg-indigo-500 hover:bg-indigo-600 flex items-center justify-center shadow-lg">
+                    <i data-lucide="bar-chart-3" class="w-5 h-5 mr-2"></i>
+                    Classifica Aggiornata
+                </a>
+                
+                <a href="${RISULTATI_IMAGE_URL}" target="_blank" class="w-full text-white font-semibold py-2 px-4 rounded-lg transition duration-150 bg-teal-500 hover:bg-teal-600 flex items-center justify-center shadow-lg">
+                    <i data-lucide="receipt-text" class="w-5 h-5 mr-2"></i>
+                    Risultati Giornata
+                </a>
+            </div>
+
             <p class="mt-6 text-xs text-gray-500 text-center">ID Utente Firebase: <span class="font-mono text-xs text-green-600 break-all">${userId || 'N/A'}</span></p>
         </div>
     `;
@@ -243,6 +309,7 @@ const renderHomepage = () => {
                     <i data-lucide="user" class="inline w-4 h-4 mr-2 text-blue-500"></i>
                     ${p.name} - ${p.role} 
                     ${p.level ? `(Livello: <span class="font-bold text-green-600">${p.level}</span>)` : `(Range: ${p.minLevel}/${p.maxLevel})`}
+                    (Rnd: ${p.roundNumber || '1'})
                 </span>
                 </li>
         `).join('')
@@ -276,7 +343,7 @@ const renderHomepage = () => {
             <div>
                 <h2 class="text-xl font-bold text-gray-700 mb-4 flex items-center">
                     <i data-lucide="users" class="w-5 h-5 mr-2 text-green-500"></i>
-                    Rosa Giocatori
+                    Rosa Giocatori (${currentTeam.players ? currentTeam.players.length : 0}/${FINAL_ROSTER_SIZE})
                 </h2>
                 <ul id="players-list" class="space-y-3">
                     ${playersListHtml}
@@ -287,65 +354,187 @@ const renderHomepage = () => {
     setContent(homepageHtml);
 };
 
-const renderDraft = () => {
+window.renderDraft = async () => {
+    document.getElementById('content').innerHTML = `
+        <div class="text-center text-gray-500">Caricamento dati Draft...</div>
+    `;
     document.getElementById('header-title').textContent = "Area Draft - Giocatori Disponibili";
 
-    if (!draftPlayers || draftPlayers.length === 0) {
-        setContent(`
-            <button onclick="renderHomepage()" class="btn-secondary bg-gray-500 hover:bg-gray-600 mb-6">
-                <i data-lucide="arrow-left" class="w-5 h-5"></i>
-                Torna alla Homepage
-            </button>
-            <div class="text-center text-gray-500 p-8 bg-gray-100 rounded-xl border border-gray-200">Nessun giocatore disponibile nel draft al momento.</div>
-        `);
-        return;
+    // **CORREZIONE CACHE**: Garantisce che la lista squadre sia caricata prima di usare i nomi nell'ordine
+    if (!currentTeam.isAdmin) {
+        await fetchTeams(); // Forza il ricaricamento completo per l'utente normale
+    }
+    
+    // Logica per il turno e lo stato del draft
+    const draftOrderLength = draftStatus.draftOrder?.length || 0;
+    
+    // Assicura che currentTurnIndex sia valido. 
+    const turnIndex = draftStatus.currentTurnIndex < draftOrderLength ? draftStatus.currentTurnIndex : draftOrderLength > 0 ? draftOrderLength - 1 : 0;
+    
+    const currentTurnTeamId = draftOrderLength > 0 && draftStatus.currentTurnIndex < draftOrderLength ? draftStatus.draftOrder[draftStatus.currentTurnIndex] : null;
+    const isMyTurn = currentTurnTeamId === currentTeam.id;
+    
+    // CERCA IL NOME DELLA SQUADRA CORRETTA
+    const teamIdForDisplay = currentTurnTeamId || (draftOrderLength > 0 ? draftStatus.draftOrder[turnIndex] : null);
+    const currentTurnTeam = teams.find(t => t.id === teamIdForDisplay) || { name: 'Squadra Sconosciuta' };
+    
+    // Tracking del round
+    const currentRoundNumber = draftStatus.roundNumber || 1;
+    const hasDraftedThisRound = currentTeam.players?.some(p => p.roundNumber === currentRoundNumber) || false;
+    
+    // Determina se il Draft è Finito (tutte le squadre hanno avuto un turno)
+    const isDraftFinished = draftStatus.currentTurnIndex >= draftOrderLength && draftOrderLength > 0 && !draftStatus.isDraftActive;
+    
+    let draftMessageHtml = '';
+    let draftTableHtml = '';
+
+    if (!draftStatus.isDraftActive && !isDraftFinished) {
+        // Draft fermo dall'admin (non ancora iniziato o resettato)
+        draftMessageHtml = `
+            <div class="text-center text-red-700 p-8 bg-red-100 rounded-xl border border-red-400">
+                <i data-lucide="gavel" class="w-8 h-8 mx-auto mb-4"></i>
+                <h3 class="text-xl font-bold">Draft non attivo!</h3>
+                <p>L'Admin non ha ancora avviato la sessione di Draft (Round ${currentRoundNumber}). Riprova più tardi.</p>
+            </div>
+        `;
+    } else if (isDraftFinished) {
+         // Draft completato
+        draftMessageHtml = `
+            <div class="text-center text-blue-700 p-8 bg-blue-100 rounded-xl border border-blue-400">
+                <i data-lucide="trophy" class="w-8 h-8 mx-auto mb-4"></i>
+                <h3 class="text-xl font-bold">Draft Round ${currentRoundNumber} Completato!</h3>
+                <p>Tutte le squadre hanno avuto il loro turno. L'Admin deve avviare il prossimo round.</p>
+            </div>
+        `;
+    } else {
+        // --- LOGICA ATTIVA ---
+        
+        // Controlliamo se la squadra ha già draftato in questo round specifico.
+        if (hasDraftedThisRound) {
+            // Se ha draftato in questo round, deve aspettare che il draft finisca o che il round cambi.
+             draftMessageHtml = `
+                <div class="p-4 rounded-xl border border-blue-400 bg-blue-100 text-blue-800">
+                    <p class="text-lg font-semibold flex items-center justify-center">
+                        <i data-lucide="check-circle" class="w-6 h-6 mr-2"></i>
+                        Hai già draftato un giocatore in questo Round (${currentRoundNumber}). Attendi che l'Admin avvii il prossimo giro.
+                    </p>
+                </div>
+            `;
+        } else {
+            // Visualizzazione del Turno NORMALE
+            const turnStatusClass = isMyTurn ? 'bg-green-100 border-green-400 text-green-800' : 'bg-red-100 border-red-400 text-red-800';
+            const turnStatusIcon = isMyTurn ? 'megaphone' : 'watch';
+            
+            const turnStatusText = isMyTurn 
+                ? 'È il tuo turno! Scegli rapidamente il tuo giocatore.'
+                : `Attendi il tuo turno. Attualmente sta draftando: <strong class="text-red-700">${currentTurnTeam.name}</strong>.`;
+
+            draftMessageHtml = `
+                <div class="p-4 rounded-xl border ${turnStatusClass} mb-4">
+                    <p class="text-lg font-semibold flex items-center">
+                        <i data-lucide="${turnStatusIcon}" class="w-6 h-6 mr-2"></i>
+                        ${turnStatusText} (Round ${currentRoundNumber})
+                    </p>
+                </div>
+                <div class="p-4 rounded-xl border border-yellow-400 bg-yellow-100 text-yellow-800">
+                    <p class="text-sm font-semibold flex items-center">
+                        <i data-lucide="alert-triangle" class="w-5 h-5 mr-2"></i>
+                        Seleziona un giocatore. Il suo livello verrà estratto casualmente dal range Min/Max. (1 solo giocatore consentito per questo giro).
+                    </p>
+                </div>
+            `;
+
+            if (!draftPlayers || draftPlayers.length === 0) {
+                draftMessageHtml += `
+                    <div class="text-center text-gray-500 p-8 bg-gray-100 rounded-xl border border-gray-200 mt-4">Nessun giocatore disponibile nel draft al momento.</div>
+                `;
+            } else {
+                // Tabella dei giocatori
+                 draftTableHtml = `
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200 rounded-lg overflow-hidden border border-gray-200">
+                            <thead class="bg-gray-100">
+                                <tr>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nome</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ruolo</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Età</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Livello (Min/Max)</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Azione</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-200" id="draft-players-table">
+                                ${draftPlayers.map(p => `
+                                    <tr class="text-gray-700 hover:bg-green-50 transition duration-100">
+                                        <td class="px-4 py-3 whitespace-nowrap text-sm font-medium">${p.name}</td>
+                                        <td class="px-4 py-3 whitespace-nowrap text-sm">${p.role}</td>
+                                        <td class="px-4 py-3 whitespace-nowrap text-sm">${p.age}</td>
+                                        <td class="px-4 py-3 whitespace-nowrap text-sm font-semibold text-primary-color">${p.minLevel} / ${p.maxLevel}</td>
+                                        <td class="px-4 py-3 whitespace-nowrap text-sm font-medium">
+                                            <button onclick="draftPlayer('${p.id}')" 
+                                                    class="text-white text-xs font-bold py-2 px-4 rounded-full transition duration-150 ${isMyTurn ? 'bg-green-500 hover:bg-green-600' : 'bg-gray-400 cursor-not-allowed'}"
+                                                    ${isMyTurn ? '' : 'disabled'}>
+                                                Drafta
+                                            </button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            }
+        }
     }
 
-    const draftHtml = `
+    // Costruzione dell'HTML finale
+    const finalHtml = `
         <div class="space-y-6">
             <button onclick="renderHomepage()" class="btn-secondary bg-gray-500 hover:bg-gray-600">
                 <i data-lucide="arrow-left" class="w-5 h-5"></i>
                 Torna alla Homepage
             </button>
             
-            <div class="p-4 rounded-xl border border-yellow-400 bg-yellow-100 text-yellow-800">
-                <p class="text-sm font-semibold flex items-center">
-                    <i data-lucide="alert-triangle" class="w-5 h-5 mr-2"></i>
-                    Seleziona un giocatore. Il suo livello verrà estratto casualmente dal range Min/Max.
-                </p>
-            </div>
+            ${draftMessageHtml}
+            ${draftTableHtml}
 
-            <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-gray-200 rounded-lg overflow-hidden border border-gray-200">
-                    <thead class="bg-gray-100">
-                        <tr>
-                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nome</th>
-                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ruolo</th>
-                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Età</th>
-                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Livello (Min/Max)</th>
-                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Azione</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200" id="draft-players-table">
-                        ${draftPlayers.map(p => `
-                            <tr class="text-gray-700 hover:bg-green-50 transition duration-100">
-                                <td class="px-4 py-3 whitespace-nowrap text-sm font-medium">${p.name}</td>
-                                <td class="px-4 py-3 whitespace-nowrap text-sm">${p.role}</td>
-                                <td class="px-4 py-3 whitespace-nowrap text-sm">${p.age}</td>
-                                <td class="px-4 py-3 whitespace-nowrap text-sm font-semibold text-primary-color">${p.minLevel} / ${p.maxLevel}</td>
-                                <td class="px-4 py-3 whitespace-nowrap text-sm font-medium">
-                                    <button onclick="draftPlayer('${p.id}')" class="bg-green-500 hover:bg-green-600 text-white text-xs font-bold py-2 px-4 rounded-full transition duration-150">
-                                        Drafta
-                                    </button>
-                                </td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            </div>
+            ${draftOrderLength > 0 ? `
+                <div class="p-4 bg-white rounded-xl border border-gray-200 shadow-lg max-h-60 overflow-y-auto">
+                    <h3 class="text-lg font-bold text-gray-700 mb-3 flex items-center">
+                        <i data-lucide="list-ordered" class="w-5 h-5 mr-2 text-indigo-500"></i>
+                        Ordine di Draft (Turno ${draftStatus.currentTurnIndex + 1}/${draftOrderLength})
+                    </h3>
+                    <ul class="space-y-1 text-sm">
+                        ${draftStatus.draftOrder.map((teamId, index) => {
+                            // Cerca la squadra nella cache globale `teams`
+                            const team = teams.find(t => t.id === teamId);
+                            const teamName = team?.name || 'Squadra Sconosciuta';
+                            const isCurrent = index === draftStatus.currentTurnIndex;
+                            
+                            // Controlla se la squadra ha draftato nel round corrente
+                            const hasDraftedInCurrentRound = team?.players?.some(p => p.roundNumber === currentRoundNumber) || false;
+
+                            const isPast = index < draftStatus.currentTurnIndex; 
+                            
+                            const statusClass = isCurrent ? 'bg-yellow-200 border-yellow-500 font-bold' : 
+                                                hasDraftedInCurrentRound ? 'bg-green-100 border-green-300' : 
+                                                isPast ? 'bg-red-100 border-red-300 line-through' :
+                                                'bg-gray-50 border-gray-200';
+                            const statusIcon = isCurrent ? 'chevrons-right' : hasDraftedInCurrentRound ? 'check' : 'minus';
+
+                            return `
+                                <li class="p-2 rounded-lg border flex items-center ${statusClass}">
+                                    <i data-lucide="${statusIcon}" class="w-4 h-4 mr-2"></i>
+                                    #${index + 1}: ${teamName} 
+                                    ${isCurrent ? '(Turno Attuale)' : hasDraftedInCurrentRound ? '(Draftato in Round ' + currentRoundNumber + ')' : isPast ? '(Saltato/Assente)' : ''}
+                                </li>
+                            `;
+                        }).join('')}
+                    </ul>
+                </div>
+            ` : ''}
         </div>
     `;
-    setContent(draftHtml);
+    setContent(finalHtml);
 };
 
 // Nuova vista per l'Admin per gestire la rosa di una squadra specifica
@@ -360,7 +549,7 @@ const renderAdminTeamView = (teamId) => {
             <li class="p-3 bg-white rounded-lg border border-gray-200 flex justify-between items-center text-gray-700 shadow-sm">
                 <span>
                     <i data-lucide="user" class="inline w-4 h-4 mr-2 text-blue-500"></i>
-                    ${p.name} - ${p.role} (Livello: <span class="font-bold text-green-600">${p.level || 'N/D'}</span>)
+                    ${p.name} - ${p.role} (Livello: <span class="font-bold text-green-600">${p.level || 'N/D'}</span>) (Rnd: ${p.roundNumber || '1'})
                 </span>
                 <button onclick="window.removePlayerFromTeamAdmin('${teamId}', '${p.id}', '${p.name}', ${p.minLevel}, ${p.maxLevel})" class="text-red-500 hover:text-red-700 text-sm font-semibold transition">
                     <i data-lucide="trash-2" class="inline w-4 h-4"></i> Rimuovi
@@ -379,7 +568,7 @@ const renderAdminTeamView = (teamId) => {
             <div class="p-6 bg-blue-50 rounded-xl border border-blue-200 shadow-lg">
                 <h3 class="text-xl font-bold text-blue-700 mb-2">Dettagli Squadra</h3>
                 <p>Presidente: ${team.presidentName}</p>
-                <p>Giocatori in rosa: ${team.players ? team.players.length : 0}</p>
+                <p>Giocatori in rosa: ${team.players ? team.players.length : 0}/${FINAL_ROSTER_SIZE}</p>
             </div>
 
             <div>
@@ -397,15 +586,65 @@ const renderAdminTeamView = (teamId) => {
 };
 window.renderAdminTeamView = renderAdminTeamView;
 
+// NUOVA FUNZIONE: Avanza al Round Successivo
+window.advanceToNextRound = async () => {
+    if (!currentTeam || !currentTeam.isAdmin) return;
+
+    const currentRound = draftStatus.roundNumber || 1;
+    const confirmation = await showConfirmationModal(`Sei sicuro di voler avviare il Round ${currentRound + 1}? Questo resetterà l'ordine di draft e permetterà a tutte le squadre di draftare un altro giocatore.`);
+    if (!confirmation) return;
+
+    try {
+        const docRef = getDraftStatusDocRef();
+
+        // 1. Incrementa il round number
+        const newRoundNumber = currentRound + 1;
+
+        // 2. Ricarica la lista squadre e rimescola l'ordine
+        const teamsSnapshot = await getDocs(getPublicCollectionRef(TEAM_COLLECTION_NAME));
+        teams = teamsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); 
+        let teamIds = teams.map(t => t.id); 
+        const shuffledOrder = shuffleArray(teamIds);
+        
+        await setDoc(docRef, { 
+            isDraftActive: true, 
+            draftOrder: shuffledOrder, // Nuovo ordine casuale
+            currentTurnIndex: 0, // Reset del turno
+            roundNumber: newRoundNumber, // Nuovo round number
+            lastUpdated: serverTimestamp() 
+        }, { merge: true });
+
+        // Dopo l'aggiornamento, il listener re-renderizzerà la vista Admin.
+        alert(`Round ${newRoundNumber} avviato con successo!`);
+    } catch (error) {
+        console.error("Errore nell'avanzamento al round successivo:", error);
+        alert("Errore nell'avanzamento del round. Controlla la console.");
+    }
+};
+window.advanceToNextRound = advanceToNextRound;
+
 const renderAdmin = () => {
     document.getElementById('header-title').textContent = "Area Admin (serieseria)";
 
+    // Logica per il pulsante Draft
+    const draftButtonText = draftStatus.isDraftActive ? 'Ferma il Draft' : 'Avvia il Draft';
+    const draftButtonColor = draftStatus.isDraftActive ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700';
+    const draftButtonIcon = draftStatus.isDraftActive ? 'lock' : 'check-circle';
+    const draftButtonAction = draftStatus.isDraftActive ? 'updateDraftStatus(false)' : 'updateDraftStatus(true)';
+
+    const draftOrderLength = draftStatus.draftOrder?.length || 0;
+    const currentTurnTeamName = teams.find(t => t.id === draftStatus.draftOrder[draftStatus.currentTurnIndex])?.name || 'N/D';
+    const currentRound = draftStatus.roundNumber || 1;
+
+    // Determina se tutti i turni del round sono stati usati (anche se il draft è fermo)
+    const isRoundFinished = draftOrderLength > 0 && draftStatus.currentTurnIndex >= draftOrderLength;
+    
     // Lista di tutte le squadre registrate
     const teamsListHtml = teams.length > 0
         ? teams.map(t => `
             <li class="p-3 bg-white rounded-lg border border-gray-200 flex flex-col md:flex-row justify-between items-center space-y-2 md:space-y-0 text-gray-700 shadow-sm">
                 <div class="flex-grow text-left w-full md:w-auto">
-                    <strong class="text-blue-600">${t.name}</strong> - Presidente: ${t.presidentName} (${t.players ? t.players.length : 0} gioc.)
+                    <strong class="text-blue-600">${t.name}</strong> - Presidente: ${t.presidentName} (${t.players ? t.players.length : 0}/${FINAL_ROSTER_SIZE} gioc.)
                     <div class="text-xs text-gray-500 mt-1 break-all">Doc ID: ${t.id}</div>
                 </div>
                 <div class="flex space-x-2">
@@ -439,12 +678,39 @@ const renderAdmin = () => {
                 Logout Admin
             </button>
             
+            <div class="p-6 bg-indigo-50 rounded-xl border border-indigo-200 shadow-lg text-center">
+                <h2 class="text-xl font-bold text-indigo-700 mb-4 flex items-center justify-center">
+                    <i data-lucide="settings" class="w-5 h-5 mr-2 text-indigo-500"></i>
+                    Controllo Stato Draft (Round ${currentRound})
+                </h2>
+                <div class="flex flex-col space-y-3">
+                    ${draftStatus.isDraftActive ? `
+                        <button onclick="${draftButtonAction}" class="text-white text-lg font-bold py-3 px-8 rounded-xl transition duration-150 ${draftButtonColor}">
+                            <i data-lucide="${draftButtonIcon}" class="w-6 h-6 inline mr-2"></i>
+                            ${draftButtonText}
+                        </button>
+                    ` : isRoundFinished || draftOrderLength === 0 ? `
+                        <button onclick="advanceToNextRound()" class="bg-blue-500 hover:bg-blue-600 text-white text-lg font-bold py-3 px-8 rounded-xl transition duration-150">
+                            <i data-lucide="chevrons-right" class="w-6 h-6 inline mr-2"></i>
+                            Avvia Round ${draftOrderLength === 0 ? currentRound : currentRound + 1}
+                        </button>
+                    ` : `
+                        <button onclick="updateDraftStatus(true)" class="text-white text-lg font-bold py-3 px-8 rounded-xl transition duration-150 bg-green-600 hover:bg-green-700">
+                            <i data-lucide="check-circle" class="w-6 h-6 inline mr-2"></i>
+                            Avvia il Draft
+                        </button>
+                    `}
+                </div>
+                
+                <p class="mt-3 text-sm text-indigo-800">Stato Attuale: <strong class="font-extrabold ${draftStatus.isDraftActive ? 'text-red-700' : 'text-green-700'}">${draftStatus.isDraftActive ? 'ATTIVO' : 'FERMO'}</strong></p>
+                <p class="text-xs text-gray-600 mt-2">Squadra al Turno ${draftStatus.currentTurnIndex + 1}/${draftOrderLength}: ${currentTurnTeamName}</p>
+            </div>
             <div class="p-6 bg-green-50 rounded-xl border border-green-200 shadow-lg">
                 <h2 class="text-xl font-bold text-green-700 mb-4 flex items-center">
                     <i data-lucide="plus-circle" class="w-5 h-5 mr-2 text-green-500"></i>
                     Aggiungi Giocatore al Draft
                 </h2>
-                <form id="add-player-form" class="space-y-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <form id="add-player-form" class="space-y-4 grid grid-cols-1 md:col-span-2 gap-4">
                     <div><input type="text" id="pName" placeholder="Nome Giocatore" required class="input-style"></div>
                     <div><input type="text" id="pRole" placeholder="Ruolo (es. Att, Cen, Dif)" required class="input-style"></div>
                     <div><input type="number" id="pAge" placeholder="Età" min="15" max="50" required class="input-style"></div>
@@ -500,7 +766,8 @@ const handleLogin = async (e) => {
     // 2. Caso Squadra Utente
     try {
         const teamsRef = getPublicCollectionRef(TEAM_COLLECTION_NAME);
-        const q = query(teamsRef, where("name", "==", teamName));
+        // Cerca il nome della squadra in modo case-insensitive
+        const q = query(teamsRef, where("nameLower", "==", teamName.toLowerCase()));
         const snapshot = await getDocs(q);
 
         if (snapshot.empty) {
@@ -511,6 +778,7 @@ const handleLogin = async (e) => {
 
             const newTeamData = {
                 name: teamName,
+                nameLower: teamName.toLowerCase(),  // Salva anche la versione in minuscolo per le ricerche case-insensitive
                 presidentName: 'Presidente ' + teamName,
                 password: password,
                 players: [],
@@ -570,20 +838,43 @@ window.updatePresidentName = async (newName) => {
 let teamsUnsub = null;
 let draftUnsub = null;
 let teamUnsub = null;
+let draftStatusUnsub = null; 
 
 const stopAllListeners = () => {
     if (teamsUnsub) teamsUnsub();
     if (draftUnsub) draftUnsub();
     if (teamUnsub) teamUnsub();
+    if (draftStatusUnsub) draftStatusUnsub(); 
     teamsUnsub = null;
     draftUnsub = null;
     teamUnsub = null;
+    draftStatusUnsub = null; 
 };
 
 const startDataListeners = () => {
     stopAllListeners();
 
-    if (currentTeam.isAdmin) {
+    // Listener Stato Draft (per Admin e Utenti)
+    draftStatusUnsub = onSnapshot(getDraftStatusDocRef(), (docSnapshot) => {
+        if (docSnapshot.exists()) {
+            draftStatus = docSnapshot.data();
+            // Assicura che le proprietà esistano, altrimenti usa i default
+            if (typeof draftStatus.isDraftActive === 'undefined') draftStatus.isDraftActive = false;
+            if (!draftStatus.draftOrder) draftStatus.draftOrder = [];
+            if (typeof draftStatus.currentTurnIndex === 'undefined') draftStatus.currentTurnIndex = 0;
+            if (typeof draftStatus.roundNumber === 'undefined') draftStatus.roundNumber = 1; // Default a Round 1
+        } else {
+            // Se il documento non esiste, usa i valori predefiniti
+            draftStatus = { isDraftActive: false, draftOrder: [], currentTurnIndex: 0, roundNumber: 1 };
+        }
+        
+        // Ricarica la vista se l'utente è sulla Draft o l'Admin è sulla Home Admin
+        const currentTitle = document.getElementById('header-title').textContent;
+        if (currentTitle.includes('Area Draft')) renderDraft();
+        if (currentTitle.includes('Area Admin') && !currentTitle.includes('Gestione Rosa')) renderAdmin();
+    }, (error) => console.error("Errore listener stato draft:", error));
+
+    if (currentTeam && currentTeam.isAdmin) {
         // Admin: ascolta tutte le squadre e tutti i giocatori
         draftUnsub = onSnapshot(getPublicCollectionRef(PLAYER_COLLECTION_NAME), (snapshot) => {
             draftPlayers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -592,12 +883,12 @@ const startDataListeners = () => {
             if (currentTitle.includes('Area Admin') && !currentTitle.includes('Gestione Rosa')) renderAdmin();
         }, (error) => console.error("Errore listener draft admin:", error));
 
+        // Admin ha il listener su tutte le squadre
         teamsUnsub = onSnapshot(getPublicCollectionRef(TEAM_COLLECTION_NAME), (snapshot) => {
             teams = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             // Ricarica la vista Admin se l'admin è su una vista rilevante
             const currentTitle = document.getElementById('header-title').textContent;
             if (currentTitle.includes('Area Admin')) {
-                // Se l'admin è su una vista di gestione squadra specifica, ricarica quella
                 const teamNameMatch = currentTitle.match(/Gestione Rosa di (.*)/);
                 if (teamNameMatch) {
                     const teamName = teamNameMatch[1];
@@ -609,29 +900,78 @@ const startDataListeners = () => {
             }
         }, (error) => console.error("Errore listener teams admin:", error));
 
-    } else {
+    } else if (currentTeam && currentTeam.id) {
         // Utente: ascolta solo la propria squadra e i giocatori del draft
         draftUnsub = onSnapshot(getPublicCollectionRef(PLAYER_COLLECTION_NAME), (snapshot) => {
             draftPlayers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             if (document.getElementById('header-title').textContent.includes('Area Draft')) renderDraft();
         }, (error) => console.error("Errore listener draft utente:", error));
 
-        if (currentTeam.id) {
-            teamUnsub = onSnapshot(doc(getPublicCollectionRef(TEAM_COLLECTION_NAME), currentTeam.id), (docSnapshot) => {
-                if (docSnapshot.exists()) {
-                    currentTeam = { id: docSnapshot.id, ...docSnapshot.data() };
-                    if (document.getElementById('header-title').textContent.includes('Homepage')) renderHomepage();
-                } else {
-                    // Se la squadra viene eliminata dall'admin, l'utente viene disconnesso
-                    logout();
-                }
-            }, (error) => console.error("Errore listener squadra utente:", error));
-        }
+        teamUnsub = onSnapshot(doc(getPublicCollectionRef(TEAM_COLLECTION_NAME), currentTeam.id), (docSnapshot) => {
+            if (docSnapshot.exists()) {
+                currentTeam = { id: docSnapshot.id, ...docSnapshot.data() };
+                if (document.getElementById('header-title').textContent.includes('Homepage')) renderHomepage();
+                if (document.getElementById('header-title').textContent.includes('Area Draft')) renderDraft(); // Aggiorna anche draft se cambia il numero giocatori
+            } else {
+                // Se la squadra viene eliminata dall'admin, l'utente viene disconnesso
+                logout();
+            }
+        }, (error) => console.error("Errore listener squadra utente:", error));
     }
 };
 
 
 // --- FUNZIONI ADMIN (Gestione Dati) ---
+
+/**
+ * Aggiorna lo stato del Draft in Firestore.
+ * @param {boolean} isActive - true per avviare, false per fermare.
+ */
+window.updateDraftStatus = async (isActive) => {
+    if (!currentTeam || !currentTeam.isAdmin) return;
+    try {
+        const docRef = getDraftStatusDocRef();
+        const currentRound = draftStatus.roundNumber || 1;
+
+        if (isActive) {
+            // Logica di AVVIO DRAFT: Genera l'ordine casuale
+            
+            // **IMPORTANTE**: Ricarichiamo la lista squadre per avere i dati più freschi
+            const teamsSnapshot = await getDocs(getPublicCollectionRef(TEAM_COLLECTION_NAME));
+            
+            // Aggiorna la cache globale `teams` e usa i dati estratti per l'ordine
+            teams = teamsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); 
+            let teamIds = teams.map(t => t.id); 
+            
+            if (teamIds.length === 0) {
+                 return alert("Non ci sono squadre registrate per avviare il draft.");
+            }
+            
+            // Mescola gli ID
+            const shuffledOrder = shuffleArray(teamIds);
+
+            await setDoc(docRef, { 
+                isDraftActive: true, 
+                draftOrder: shuffledOrder, // Salva l'ordine casuale
+                currentTurnIndex: 0, 
+                roundNumber: currentRound, // Mantiene il round attuale
+                lastUpdated: serverTimestamp() 
+            }, { merge: true });
+
+        } else {
+            // Logica di STOP DRAFT: Resetta l'ordine
+            await setDoc(docRef, { 
+                isDraftActive: false,
+                lastUpdated: serverTimestamp() 
+            }, { merge: true });
+        }
+        
+        // Il listener onSnapshot aggiornerà il rendering
+    } catch (error) {
+        console.error("Errore nell'aggiornamento dello stato del draft:", error);
+        alert("Errore nell'aggiornamento dello stato del draft. Controlla la console.");
+    }
+};
 
 const addDraftPlayer = async (e) => {
     e.preventDefault();
@@ -676,7 +1016,7 @@ window.removeDraftPlayer = async (playerId) => {
  * Funzione per l'Admin per rimuovere un giocatore da una specifica rosa E reinserirlo nel draft.
  * @param {string} teamId - ID del documento della squadra.
  * @param {string} playerIdToRemove - ID (o nome, come fallback) del giocatore da rimuovere.
- * @param {string} playerName - Nome del giocatore per il reinserimento.
+ * @param {string} playerName - Nome del giocatore per la conferma.
  * @param {number} minLevel - Livello min per il reinserimento.
  * @param {number} maxLevel - Livello max per il reinserimento.
  */
@@ -687,6 +1027,7 @@ window.removePlayerFromTeamAdmin = async (teamId, playerIdToRemove, playerName, 
      const teamData = teams.find(t => t.id === teamId);
      if (!teamData || !teamData.players) return;
 
+     // Usiamo findIndex sul nome o sull'ID (ID è più sicuro, ma se non c'è, usiamo il nome)
      const indexToRemove = teamData.players.findIndex(p => p.id === playerIdToRemove || p.name === playerIdToRemove);
      if (indexToRemove === -1) return;
 
@@ -694,7 +1035,7 @@ window.removePlayerFromTeamAdmin = async (teamId, playerIdToRemove, playerName, 
      const removedPlayer = updatedPlayers.splice(indexToRemove, 1)[0]; // Cattura il giocatore rimosso
 
      // Estrai l'età del giocatore rimosso per il reinserimento
-     const playerAge = removedPlayer.age || 25; // Usa un valore di default se l'età non è salvata (dovrebbe esserlo)
+     const playerAge = removedPlayer.age || 25; 
 
 
     try {
@@ -747,10 +1088,43 @@ window.removeTeam = async (teamId, teamName) => {
 
 
 // --- FUNZIONI UTENTE (Draft) ---
-// La funzione window.removePlayerFromTeam è stata rimossa, in linea con la richiesta.
 
 window.draftPlayer = async (playerId) => {
     if (!currentTeam || currentTeam.isAdmin) return;
+
+    // 1. Controllo dello stato del draft
+    if (!draftStatus.isDraftActive) {
+        alert("Impossibile draftare: La sessione di Draft è attualmente ferma.");
+        renderDraft(); 
+        return; 
+    }
+    
+    // 2. Controllo del limite di giocatori (limite assoluto 99)
+    if (currentTeam.players && currentTeam.players.length >= FINAL_ROSTER_SIZE) {
+        alert(`Hai raggiunto il limite massimo di ${FINAL_ROSTER_SIZE} giocatori per la rosa.`);
+        renderDraft();
+        return;
+    }
+    
+    // 3. Controllo del turno
+    const currentTurnTeamId = draftStatus.draftOrder[draftStatus.currentTurnIndex];
+    if (currentTurnTeamId !== currentTeam.id) {
+        const currentTurnTeamName = teams.find(t => t.id === currentTurnTeamId)?.name || 'una squadra sconosciuta';
+        alert(`Non è il tuo turno di draftare. Attendi che finisca ${currentTurnTeamName}.`);
+        renderDraft();
+        return;
+    }
+
+    // 4. Controllo del limite di 1 giocatore per round
+    const currentRoundNumber = draftStatus.roundNumber || 1;
+    const hasDraftedThisRound = currentTeam.players?.some(p => p.roundNumber === currentRoundNumber) || false;
+    
+    if (hasDraftedThisRound) {
+        alert(`Hai già draftato un giocatore in questo Round (${currentRoundNumber}). Devi attendere il prossimo turno.`);
+        renderDraft();
+        return;
+    }
+
 
     // Cerchiamo l'oggetto completo del giocatore dal cache locale
     const playerToDraft = draftPlayers.find(p => p.id === playerId);
@@ -761,20 +1135,36 @@ window.draftPlayer = async (playerId) => {
 
     const teamDocRef = doc(getPublicCollectionRef(TEAM_COLLECTION_NAME), currentTeam.id);
     const playerDocRef = doc(getPublicCollectionRef(PLAYER_COLLECTION_NAME), playerId);
+    const draftStatusDocRef = getDraftStatusDocRef(); // Riferimento al documento di stato del draft
 
     try {
         await runTransaction(db, async (transaction) => {
             // ESEGUI TUTTE LE LETTURE PRIMA DELLE SCRITTURE
-
-            // 1. Lettura: Ottieni il documento del giocatore nel draft
-            const playerDoc = await transaction.get(playerDocRef);
-
-            // 2. Lettura: Ottieni il documento della squadra
             const teamDoc = await transaction.get(teamDocRef);
+            const playerDoc = await transaction.get(playerDocRef);
+            const statusDoc = await transaction.get(draftStatusDocRef); // Lettura dello stato del draft
 
-            // Verifica esistenza dopo aver eseguito tutte le letture
+            const teamData = teamDoc.data();
+            const currentPlayers = teamData.players || [];
+            const statusData = statusDoc.data();
+            const txRoundNumber = statusData.roundNumber || 1; // RoundNumber letto dalla transazione
+
+            // Re-verifica concorrente del limite assoluto all'interno della transazione
+            if (currentPlayers.length >= FINAL_ROSTER_SIZE) {
+                 throw new Error(`Limite assoluto raggiunto: ${FINAL_ROSTER_SIZE} giocatori massimi. Transazione bloccata.`);
+            }
+            // Re-verifica concorrente del limite Round all'interno della transazione
+            if (currentPlayers.some(p => p.roundNumber === txRoundNumber)) {
+                 throw new Error(`Limite Round raggiunto: Hai già draftato nel Round ${txRoundNumber}. Transazione bloccata.`);
+            }
+            
+            // Re-verifica concorrente del turno all'interno della transazione
+            if (statusData.draftOrder[statusData.currentTurnIndex] !== currentTeam.id) {
+                 throw new Error("Turno non rispettato. Qualcun altro ha draftato prima. Transazione bloccata.");
+            }
+
             if (!playerDoc.exists) {
-                throw "Giocatore già draftato da un'altra squadra o non esistente.";
+                throw new Error("Giocatore già draftato da un'altra squadra o non esistente.");
             }
 
             // Dati del giocatore da salvare nella rosa della squadra
@@ -789,27 +1179,55 @@ window.draftPlayer = async (playerId) => {
                 level: getRandomLevel(playerToDraft.minLevel, playerToDraft.maxLevel),
                 teamId: currentTeam.id,
                 draftedAt: new Date().toISOString(),
+                roundNumber: txRoundNumber, // Salva il round number sul giocatore
             };
 
             // ORA ESEGUI LE SCRITTURE
 
-            // 3. Scrittura/Cancellazione: Rimuovi il giocatore dal Draft
+            // 1. Rimuovi il giocatore dal Draft
             transaction.delete(playerDocRef);
 
-            // 4. Scrittura/Aggiornamento: Aggiungi il giocatore all'array 'players' della squadra
-            const currentPlayers = teamDoc.data().players || [];
-
+            // 2. Aggiungi il giocatore all'array 'players' della squadra
             transaction.update(teamDocRef, {
                 players: [...currentPlayers, draftedPlayer],
             });
+            
+            // 3. Aggiorna il turno
+            const nextTurnIndex = statusData.currentTurnIndex + 1;
+            const draftOrderLength = statusData.draftOrder?.length || 0;
+
+            if (nextTurnIndex < draftOrderLength) {
+                // Passa al prossimo turno
+                transaction.update(draftStatusDocRef, {
+                    currentTurnIndex: nextTurnIndex
+                });
+            } else {
+                // Fine del Draft (tutte le squadre hanno avuto il loro turno)
+                 transaction.update(draftStatusDocRef, {
+                    isDraftActive: false,
+                    currentTurnIndex: nextTurnIndex
+                });
+            }
+            
         });
 
-        console.log("Giocatore draftato con successo!");
+        console.log("Giocatore draftato con successo e turno avanzato!");
     } catch (error) {
         // In caso di fallimento della transazione (concorrenza, regole, ecc.)
         console.error("Errore nel processo di draft:", error);
-        const errorMessage = typeof error === 'string' ? error : 'Transazione fallita. Controlla le regole di sicurezza.';
-        alert('Errore nel draft: ' + errorMessage);
+        
+        // Estrai il messaggio di errore
+        let errorMessage = 'Transazione fallita. Controlla la console per i dettagli.';
+        if (error.message) {
+            errorMessage = error.message;
+        } else if (typeof error === 'string') {
+             errorMessage = error;
+        }
+        
+        // Se l'errore è dovuto al fatto che il draft è finito, non mostrare alert di errore
+        if (!errorMessage.includes("Limite raggiunto") && !errorMessage.includes("Turno non rispettato")) {
+             alert('Errore nel draft: ' + errorMessage);
+        }
     }
 };
 
