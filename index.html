@@ -1,258 +1,39 @@
-// ui/UIHandler.js (CONTINUAZIONE)
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fantacalcio - Gestore Squadra e Draft</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
 
-// ... (altri metodi _renderView omessi per brevità) ...
+    <div id="app" class="w-full max-w-4xl main-card rounded-xl p-6 md:p-10">
+        <h1 class="text-3xl font-extrabold text-center text-primary-color mb-8 tracking-wide border-b pb-4 border-gray-200" id="header-title">
+            <i data-lucide="trophy" class="inline-block w-7 h-7 mr-2 text-yellow-500"></i>
+            Fantacalcio League
+        </h1>
+        <div id="content">
+            <div class="text-center text-gray-500">Inizializzazione in corso...</div>
+        </div>
+    </div>
+    
+    <div id="confirmation-modal" class="modal hidden">
+        <div class="modal-content space-y-4">
+            <h3 class="text-xl font-bold text-red-600 flex items-center"><i data-lucide="shield-alert" class="w-6 h-6 mr-2"></i> Conferma Eliminazione</h3>
+            <p id="modal-text" class="text-gray-700">Sei sicuro di voler procedere?</p>
+            <div class="flex justify-end space-x-3">
+                <button id="modal-cancel" class="bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-2 px-4 rounded-lg transition">Annulla</button>
+                <button id="modal-confirm" class="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-lg transition">Conferma</button>
+            </div>
+        </div>
+    </div>
 
+    <script type="module" src="script.js"></script>
 
-    _renderAdminTeamView(teamId) {
-        const { teams, draftPlayers } = this.appState.state;
-        setHeaderTitle(`Admin: Gestione Rosa`);
-        const team = teams.find(t => t.id === teamId);
-        
-        if (!team) {
-            // Se la squadra non esiste (es. è stata rimossa), torna alla vista Admin
-            setTimeout(() => this.appState.setView('admin'), 0);
-            return createEl('div', 'text-center text-gray-500', 'Caricamento o squadra inesistente...');
-        }
-        
-        const removePlayerHandler = async (playerId, name, min, max) => {
-             const confirmation = await showConfirmationModal(
-                 `Sei sicuro di voler rimuovere ${name} dalla rosa di ${team.name} e reinserirlo nel Draft?`,
-                 "Conferma Rimuovi Giocatore"
-             );
-             if (confirmation) {
-                 await this.appState.removePlayerFromTeamAdmin(teamId, playerId, { name, minLevel: min, maxLevel: max, role: team.players.find(p => p.id === playerId)?.role, age: team.players.find(p => p.id === playerId)?.age });
-             }
-        };
-
-        const playersListHtml = team.players && team.players.length > 0
-            ? team.players.map(p => `
-                <li class="p-3 bg-white rounded-lg border border-gray-200 flex justify-between items-center text-gray-700 shadow-sm">
-                    <span>
-                        <i data-lucide="user" class="inline w-4 h-4 mr-2 text-blue-500"></i>
-                        ${p.name} - ${p.role} (Livello: <span class="font-bold text-green-600">${p.level || 'N/D'}</span>)
-                    </span>
-                    <button onclick="window.appState.uiHandler.adminRemovePlayerFromTeam('${teamId}', '${p.id}', '${p.name}', ${p.minLevel || 1}, ${p.maxLevel || 15})" class="text-red-500 hover:text-red-700 text-sm font-semibold transition">
-                        <i data-lucide="trash-2" class="inline w-4 h-4"></i> Rimuovi e Rimetti in Draft
-                    </button>
-                </li>
-            `).join('')
-            : '<li class="text-center text-gray-500 p-4 bg-gray-100 rounded-lg border border-gray-200">Questa squadra non ha giocatori.</li>';
-
-        const container = createEl('div', 'space-y-6');
-
-        appendChildren(container, [
-            createEl('button', 'btn-secondary bg-gray-500 hover:bg-gray-600', `<i data-lucide="arrow-left" class="w-5 h-5"></i> Torna all'Area Admin`, { onclick: "window.appState.setView('admin')" }),
-            createEl('div', 'p-6 bg-blue-50 rounded-xl border border-blue-200 shadow-lg', `
-                <h3 class="text-xl font-bold text-blue-700 mb-2">Dettagli Squadra: ${team.name}</h3>
-                <p>Presidente: ${team.presidentName}</p>
-                <p>Giocatori in rosa: ${team.players ? team.players.length : 0}</p>
-            `),
-            createEl('div', '', `
-                <h3 class="text-xl font-bold text-gray-700 mb-4 flex items-center">
-                    <i data-lucide="users" class="w-5 h-5 mr-2 text-red-500"></i> Rosa Attuale (Rimuovi Giocatori)
-                </h3>
-                <ul class="space-y-3">
-                    ${playersListHtml}
-                </ul>
-            `)
-        ]);
-        
-        // Espone la funzione handler per l'onclick
-        this.adminRemovePlayerFromTeam = removePlayerHandler;
-        return container;
-    }
-
-
-    _renderAdminView() {
-        const { teams, draftPlayers, draftStatus } = this.appState.state;
-        setHeaderTitle("Area Admin (serieseria)");
-        
-        const activeTeams = teams.filter(t => !t.isAdmin && t.id); 
-
-        // Gestione Azioni
-        const handleStartDraft = async () => {
-             const confirmation = await showConfirmationModal(
-                 `Sei sicuro di voler AVVIARE il Draft? Questo resetterà il turno e genererà un ordine casuale.`,
-                 "Avvia Draft"
-             );
-             if (confirmation) {
-                 await this.appState.startDraft();
-             }
-        };
-
-        const handleCloseDraft = async () => {
-             const confirmation = await showConfirmationModal(
-                 `Sei sicuro di voler CHIUDERE il Draft? Verranno ELIMINATI ${draftPlayers.length} giocatori non scelti e il draft verrà disattivato.`,
-                 "Chiudi e Pulisci Draft"
-             );
-             if (confirmation) {
-                 await this.appState.closeDraft();
-             }
-        };
-
-        const handleAddPlayer = async (e) => {
-            e.preventDefault();
-            const newPlayer = {
-                name: $('pName').value.trim(),
-                role: $('pRole').value.trim(),
-                age: parseInt($('pAge').value),
-                minLevel: parseInt($('pMinLevel').value),
-                maxLevel: parseInt($('pMaxLevel').value),
-                available: true,
-            };
-
-            if (Object.values(newPlayer).some(val => val === '' || isNaN(val))) {
-                return alert("Dati incompleti o non validi per il giocatore.");
-            }
-            if(newPlayer.minLevel < 1 || newPlayer.maxLevel > 15 || newPlayer.minLevel > newPlayer.maxLevel) {
-                 return alert("I livelli devono essere tra 1 e 15, e Min deve essere <= Max.");
-            }
-
-            await this.appState.addDraftPlayer(newPlayer);
-            $('add-player-form').reset();
-        };
-
-        const handleRemoveDraftPlayer = async (playerId) => {
-             await this.appState.removeDraftPlayer(playerId);
-        };
-        
-        const handleRemoveTeam = async (teamId, teamName) => {
-            const confirmation = await showConfirmationModal(`Sei sicuro di voler rimuovere la squadra '${teamName}'?`, "Conferma Eliminazione Squadra");
-            if (confirmation) {
-                await this.appState.removeTeam(teamId);
-            }
-        };
-        
-
-        // Lista di tutte le squadre registrate
-        const teamsListHtml = activeTeams.map((t) => `
-            <li class="p-3 bg-white rounded-lg border border-gray-200 flex flex-col md:flex-row justify-between items-center space-y-2 md:space-y-0 text-gray-700 shadow-sm">
-                <div class="flex-grow text-left w-full md:w-auto">
-                    <strong class="text-blue-600">${t.name}</strong> - Presidente: ${t.presidentName} (${t.players ? t.players.length : 0} gioc.)
-                    <div class="text-xs text-gray-500 mt-1 break-all">Doc ID: ${t.id}</div>
-                </div>
-                <div class="flex space-x-2">
-                    <button onclick="window.appState.setView('adminTeam', '${t.id}')" class="bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-bold py-2 px-4 rounded-full transition duration-150">
-                        <i data-lucide="eye" class="inline w-4 h-4"></i> Gestisci Rosa
-                    </button>
-                    <button onclick="window.appState.uiHandler.adminRemoveTeam('${t.id}', '${t.name}')" class="bg-red-500 hover:bg-red-600 text-white text-xs font-bold py-2 px-4 rounded-full transition duration-150">
-                        <i data-lucide="trash-2" class="inline w-4 h-4"></i> Rimuovi Squadra
-                    </button>
-                </div>
-            </li>
-        `).join('');
-        
-        // Stato Ordine Draft
-        const draftOrder = draftStatus.draftOrder || [];
-        const lastDraftedId = draftStatus.lastDraftedByTeamId;
-        const nextTeamId = this.appState.getNextTeamIdToDraft();
-
-        const draftOrderListHtml = draftOrder.length > 0
-            ? draftOrder.map((id, index) => {
-                const team = teams.find(t => t.id === id);
-                const isNext = nextTeamId === id;
-                const isLast = lastDraftedId === id;
-                let style = '';
-                if (isNext) style = 'bg-yellow-200 font-bold';
-                else if (isLast) style = 'bg-green-100 font-medium';
-
-                return `<li class="p-1.5 rounded text-sm ${style}">
-                    ${index + 1}. ${team ? team.name : 'Squadra Sconosciuta'}
-                </li>`;
-            }).join('')
-            : '<li class="p-1.5 text-sm text-gray-500">Nessun ordine di draft attivo. Avvia il draft per generarne uno casuale.</li>';
-        
-        // Pulsanti di Controllo Draft
-        const draftControlButtons = draftStatus.isActive 
-            ? `<button onclick="window.appState.uiHandler.adminCloseDraft()" class="btn-secondary w-full bg-red-500 hover:bg-red-600">
-                <i data-lucide="square-x" class="w-5 h-5"></i> Chiudi Draft e Cancella Giocatori Non Presi
-               </button>`
-            : `<button onclick="window.appState.uiHandler.adminStartDraft()" class="btn-primary w-full">
-                <i data-lucide="play-circle" class="w-5 h-5"></i> Avvia Draft (Stato: NON ATTIVO)
-               </button>`;
-
-        // Lista dei giocatori nel draft
-        const draftListHtml = draftPlayers.length > 0
-            ? draftPlayers.map(p => `
-                <li class="p-3 bg-white rounded-lg border border-gray-200 flex justify-between items-center text-gray-700">
-                    <span>${p.name} - ${p.role} (Liv. ${p.minLevel}/${p.maxLevel})</span>
-                    <button onclick="window.appState.uiHandler.adminRemoveDraftPlayer('${p.id}')" class="text-red-500 hover:text-red-700 text-sm font-semibold transition">
-                        <i data-lucide="trash-2" class="inline w-4 h-4 mr-1"></i> Rimuovi
-                    </button>
-                </li>
-            `).join('')
-            : '<li class="text-center text-gray-500 p-4 bg-gray-100 rounded-lg border border-gray-200">Il draft è vuoto. Aggiungi un giocatore!</li>';
-
-        const container = createEl('div', 'space-y-8');
-        
-        appendChildren(container, [
-            createEl('button', 'btn-secondary bg-red-500 hover:bg-red-600', `<i data-lucide="log-out" class="w-5 h-5"></i> Logout Admin`, { onclick: "window.appState.logout()" }),
-            // Nota: cleanupTeams viene eseguito automaticamente da FirebaseService dopo ogni lettura teams.
-
-            // Controllo Draft
-            createEl('div', 'p-6 bg-indigo-50 rounded-xl border border-indigo-200 shadow-lg space-y-4', `
-                <h2 class="text-xl font-bold text-indigo-700 flex items-center">
-                    <i data-lucide="settings-2" class="w-5 h-5 mr-2 text-indigo-500"></i> Controllo Draft (Attuale: ${draftStatus.isActive ? 'ATTIVO' : 'NON ATTIVO'})
-                </h2>
-                ${draftControlButtons}
-                
-                <div class="mt-4">
-                    <h3 class="text-lg font-bold text-indigo-700 mb-2">Ordine Draft Casuale</h3>
-                    <p class="text-sm text-indigo-700">Ultimo Draftato: ${lastDraftedId ? (teams.find(t => t.id === lastDraftedId)?.name || 'Sconosciuto') : 'Nessuno'}</p>
-                    <ul class="space-y-1 mt-2 max-h-48 overflow-y-auto bg-white p-2 rounded border border-indigo-300">
-                        ${draftOrderListHtml}
-                    </ul>
-                </div>
-            `),
-
-            // Aggiungi Giocatore al Draft
-            createEl('div', 'p-6 bg-green-50 rounded-xl border border-green-200 shadow-lg', `
-                <h2 class="text-xl font-bold text-green-700 mb-4 flex items-center">
-                    <i data-lucide="plus-circle" class="w-5 h-5 mr-2 text-green-500"></i> Aggiungi Giocatore al Draft
-                </h2>
-                <form id="add-player-form" class="space-y-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div><input type="text" id="pName" placeholder="Nome Giocatore" required class="input-style"></div>
-                    <div><input type="text" id="pRole" placeholder="Ruolo (es. Att, Cen, Dif)" required class="input-style"></div>
-                    <div><input type="number" id="pAge" placeholder="Età" min="15" max="50" required class="input-style"></div>
-                    <div><input type="number" id="pMinLevel" placeholder="Livello Min (1-15)" min="1" max="15" required class="input-style"></div>
-                    <div><input type="number" id="pMaxLevel" placeholder="Livello Max (1-15)" min="1" max="15" required class="input-style"></div>
-                    <button type="submit" class="btn-primary col-span-1 md:col-span-2">
-                        <i data-lucide="send" class="w-5 h-5"></i> Aggiungi Giocatore
-                    </button>
-                </form>
-            `),
-
-            // Giocatori Attuali nel Draft
-            createEl('div', 'p-6 bg-white rounded-xl border border-gray-200 shadow-lg', `
-                <h2 class="text-xl font-bold text-gray-700 mb-4 flex items-center">
-                    <i data-lucide="list-checks" class="w-5 h-5 mr-2 text-blue-500"></i> Giocatori nel Draft (${draftPlayers.length})
-                </h2 >
-                <ul class="space-y-3 max-h-64 overflow-y-auto">
-                    ${draftListHtml}
-                </ul>
-            `),
-
-            // Squadre Registrate
-            createEl('div', 'p-6 bg-white rounded-xl border border-gray-200 shadow-lg', `
-                <h2 class="text-xl font-bold text-gray-700 mb-4 flex items-center">
-                    <i data-lucide="shield-half" class="w-5 h-5 mr-2 text-yellow-500"></i> Gestione Squadre Registrate (${activeTeams.length})
-                </h2>
-                <ul class="space-y-3 max-h-96 overflow-y-auto">
-                    ${teamsListHtml}
-                </ul>
-            `)
-        ]);
-        
-        // Delega gli eventi dopo che il DOM è stato creato
-        setTimeout(() => $('add-player-form')?.addEventListener('submit', handleAddPlayer), 0);
-        
-        // Espone i metodi per l'onclick
-        this.adminStartDraft = handleStartDraft;
-        this.adminCloseDraft = handleCloseDraft;
-        this.adminRemoveDraftPlayer = handleRemoveDraftPlayer;
-        this.adminRemoveTeam = handleRemoveTeam;
-        
-        return container;
-    }
-
-// ... (CONTINUAZIONE della classe UIHandler) ...
+</body>
+</html>
