@@ -561,13 +561,16 @@
 
         const handleLogin = async (e) => {
             e.preventDefault();
-            const teamName = document.getElementById('teamName').value.trim();
+            const teamNameInput = document.getElementById('teamName').value.trim();
             const password = document.getElementById('password').value.trim();
+            
+            // Standardizza il nome della squadra in minuscolo per la ricerca e il salvataggio
+            const teamName = teamNameInput.toLowerCase();
 
             if (!teamName || !password) return;
 
             // 1. Caso Admin
-            if (teamName.toLowerCase() === 'serieseria' && password === 'admin') {
+            if (teamName === 'serieseria' && password === 'admin') {
                 currentTeam = { name: 'serieseria', isAdmin: true };
                 startDataListeners();
                 renderAdmin();
@@ -577,6 +580,7 @@
             // 2. Caso Squadra Utente
             try {
                 const teamsRef = getPublicCollectionRef(TEAM_COLLECTION_NAME);
+                // La query cerca il nome standardizzato in minuscolo
                 const q = query(teamsRef, where("name", "==", teamName));
                 const snapshot = await getDocs(q);
 
@@ -587,8 +591,8 @@
                     }
                     
                     const newTeamData = {
-                        name: teamName,
-                        presidentName: 'Presidente ' + teamName,
+                        name: teamName, // Salva in minuscolo
+                        presidentName: 'Presidente ' + teamNameInput, // Usa il nome originale per il display
                         password: password, 
                         players: [],
                         createdAt: serverTimestamp(),
@@ -609,7 +613,7 @@
                         startDataListeners();
                         renderHomepage();
                     } else {
-                        renderLogin("Accesso negato: Password errata per la squadra " + teamName);
+                        renderLogin("Accesso negato: Password errata per la squadra " + teamNameInput);
                     }
                 }
 
