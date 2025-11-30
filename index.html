@@ -58,10 +58,12 @@
         </div>
     </div>
     
-    <!-- Modale di Conferma (Admin) -->
+    <!-- Modale di Conferma (Usato sia per Admin che per Draft) -->
     <div id="confirmation-modal" class="modal hidden">
         <div class="modal-content space-y-4">
-            <h3 class="text-xl font-bold text-red-600 flex items-center"><i data-lucide="shield-alert" class="w-6 h-6 mr-2"></i> Conferma Eliminazione</h3>
+            <h3 class="text-xl font-bold text-red-600 flex items-center" id="modal-title">
+                <i data-lucide="shield-alert" class="w-6 h-6 mr-2"></i> Conferma Azione
+            </h3>
             <p id="modal-text" class="text-gray-700">Sei sicuro di voler procedere?</p>
             <div class="flex justify-end space-x-3">
                 <button id="modal-cancel" class="bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-2 px-4 rounded-lg transition">Annulla</button>
@@ -104,14 +106,16 @@
         let userId = null;
         let currentTeam = null;
         let isAuthReady = false;
-        let teams = []; // Cache di tutte le squadre per l'admin
+        let teams = []; // Cache di tutte le squadre per l'admin e per la logica di draft
         let draftPlayers = []; // Cache dei giocatori disponibili per il draft
         let hasGlobalAccess = false; // Nuovo stato di accesso globale
+        let draftStatus = {}; // Nuovo stato per tracciare il turno di draft
 
         // Configurazione dell'ID dell'App per i percorsi Firestore
         const appId = typeof __app_id !== 'undefined' ? __app_id : firebaseConfig.projectId;
         const PLAYER_COLLECTION_NAME = 'draft_players';
         const TEAM_COLLECTION_NAME = 'teams';
+        const DRAFT_STATUS_ID = 'draft_status'; // ID fisso per lo stato del draft
 
         // --- FUNZIONE UTILITY PER LIVELLO CASUALE ---
 
@@ -134,16 +138,19 @@
         /**
          * Mostra una modale di conferma personalizzata (sostituisce window.confirm).
          * @param {string} message - Il messaggio da visualizzare.
+         * @param {string} title - Il titolo della modale.
          * @returns {Promise<boolean>} Risolve a true se confermato, false altrimenti.
          */
-        const showConfirmationModal = (message) => {
+        const showConfirmationModal = (message, title = "Conferma Azione") => {
             return new Promise(resolve => {
                 const modal = document.getElementById('confirmation-modal');
                 const modalText = document.getElementById('modal-text');
+                const modalTitle = document.getElementById('modal-title');
                 const btnConfirm = document.getElementById('modal-confirm');
                 const btnCancel = document.getElementById('modal-cancel');
 
                 modalText.textContent = message;
+                modalTitle.textContent = title;
                 modal.classList.remove('hidden');
 
                 const handleConfirm = () => {
@@ -225,6 +232,92 @@
             // Path: artifacts/{appId}/public/data/{collectionName}
             return collection(db, `artifacts/${appId}/public/data/${collectionName}`);
         };
+        const getDraftStatusDocRef = () => {
+            return doc(getPublicCollectionRef(TEAM_COLLECTION_NAME), DRAFT_STATUS_ID);
+        };
+
+        // --- LOGICA DEL TURNO DI DRAFT (Snake Draft) ---
+
+        /**
+         * Determina l'ID della squadra che ha il prossimo turno.
+         * La logica si basa sul conteggio dei giocatori in rosa per simulare un draft a serpente.
+         * @returns {string | null} L'ID della prossima squadra che deve draftare, o null se non ci sono squadre.
+         */
+        const getNextTeamIdToDraft = () => {
+            // Filtra eventuali squadre Admin o squadre incomplete (senza ID) prima di tutto
+            const activeTeams = teams.filter(t => !t.isAdmin && t.id);
+
+            if (activeTeams.length === 0) return null;
+
+            // 1. Ordina le squadre in base alla dimensione della rosa (crescente)
+            // Usa il nome come criterio secondario per stabilità in caso di parità di dimensione della rosa.
+            const sortedTeams = [...activeTeams].sort((a, b) => {
+                if (a.players.length !== b.players.length) {
+                    return a.players.length - b.players.length;
+                }
+                // Fallback sicuro se le lunghezze sono uguali (prevenzione dell'errore di localeCompare su undefined/null)
+                const nameA = a.name || '';
+                const nameB = b.name || '';
+                return nameA.localeCompare(nameB);
+            });
+
+            const minPlayers = sortedTeams[0].players.length;
+            
+            // 2. Filtra le squadre che hanno il minimo numero di giocatori.
+            const nextRoundTeams = sortedTeams.filter(t => t.players.length === minPlayers);
+
+            // 3. Se tutte le squadre hanno lo stesso numero di giocatori (inizio o fine turno):
+            if (nextRoundTeams.length === activeTeams.length) {
+                
+                // Ordina in base al nome (alfabetico) per coerenza nel round
+                const orderedTeams = nextRoundTeams.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                const teamIds = orderedTeams.map(t => t.id);
+                
+                // Inizio assoluto del draft
+                if (!draftStatus.lastDraftedByTeamId) {
+                    return teamIds[0];
+                }
+                
+                // Continua il turno in ordine sequenziale
+                const lastDraftedIndex = teamIds.indexOf(draftStatus.lastDraftedByTeamId);
+                const nextIndex = (lastDraftedIndex + 1) % teamIds.length;
+                
+                // Se il draft è circolare e si è tornati all'inizio, torna al primo
+                if (nextIndex === 0 && lastDraftedIndex === teamIds.length - 1) {
+                    return teamIds[0];
+                }
+                
+                // Se non è l'ultimo, ritorna il successivo
+                return teamIds[nextIndex];
+
+
+            } 
+            
+            // 4. Se non tutte le squadre hanno il minimo, la prossima è la prima della lista nextRoundTeams.
+            
+            const teamsToPick = nextRoundTeams.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+            
+            // Se non c'è ID draftato, è il turno della prima squadra con meno giocatori.
+            if (!draftStatus.lastDraftedByTeamId) {
+                 return teamsToPick[0].id;
+            }
+
+            const lastDraftedTeam = activeTeams.find(t => t.id === draftStatus.lastDraftedByTeamId);
+            const orderedTeamIds = teamsToPick.map(t => t.id);
+
+            // Se l'ultima squadra che ha draftato non è la squadra con meno giocatori (e quindi ha finito il suo turno),
+            // è il turno della prima squadra tra quelle con meno giocatori (teamsToPick[0])
+            if (lastDraftedTeam && lastDraftedTeam.players.length > minPlayers) {
+                return teamsToPick[0].id;
+            }
+
+            // Altrimenti, continua l'ordine tra le squadre con lo stesso minimo di giocatori.
+            const lastIndex = orderedTeamIds.indexOf(draftStatus.lastDraftedByTeamId);
+            const nextIndex = lastIndex + 1;
+            
+            return orderedTeamIds[nextIndex] || orderedTeamIds[0];
+        };
+
 
         // --- FUNZIONI DI RENDERIZZAZIONE ---
 
@@ -317,7 +410,10 @@
                             ${p.name} - ${p.role} 
                             ${p.level ? `(Livello: <span class="font-bold text-green-600">${p.level}</span>)` : `(Range: ${p.minLevel}/${p.maxLevel})`}
                         </span>
-                        <!-- PULSANTE RIMOSSO: Gli utenti standard non possono rimuovere i giocatori -->
+                        <!-- Pulsante Rimuovi Giocatore (Utente) -->
+                        <button onclick="window.confirmRemovalUser('${p.id}', '${p.name}', ${p.minLevel}, ${p.maxLevel})" class="text-red-500 hover:text-red-700 text-sm font-semibold transition">
+                            <i data-lucide="log-out" class="inline w-4 h-4"></i> Rimuovi
+                        </button>
                     </li>
                 `).join('')
                 : '<li class="text-center text-gray-500 p-4 bg-gray-100 rounded-lg border border-gray-200">Ancora nessun giocatore in squadra. Vai al Draft!</li>';
@@ -364,6 +460,10 @@
         const renderDraft = () => {
             document.getElementById('header-title').textContent = "Area Draft - Giocatori Disponibili";
 
+            const nextTeamId = getNextTeamIdToDraft();
+            const isMyTurn = currentTeam.id === nextTeamId;
+            const nextTeamName = teams.find(t => t.id === nextTeamId)?.name || 'Nessuna Squadra';
+
             if (!draftPlayers || draftPlayers.length === 0) {
                 setContent(`
                     <button onclick="renderHomepage()" class="btn-secondary bg-gray-500 hover:bg-gray-600 mb-6">
@@ -375,6 +475,14 @@
                 return;
             }
 
+            const statusMessage = isMyTurn
+                ? `<div class="p-4 rounded-xl border border-green-500 bg-green-100 text-green-800 font-bold flex items-center justify-center">
+                    <i data-lucide="check-circle" class="w-5 h-5 mr-2"></i> È il tuo turno di draftare!
+                   </div>`
+                : `<div class="p-4 rounded-xl border border-blue-500 bg-blue-100 text-blue-800 font-medium flex items-center justify-center">
+                    <i data-lucide="hourglass" class="w-5 h-5 mr-2"></i> In attesa della scelta di: ${nextTeamName}
+                   </div>`;
+
             const draftHtml = `
                 <div class="space-y-6">
                     <button onclick="renderHomepage()" class="btn-secondary bg-gray-500 hover:bg-gray-600">
@@ -382,6 +490,8 @@
                         Torna alla Homepage
                     </button>
                     
+                    ${statusMessage}
+
                     <div class="p-4 rounded-xl border border-yellow-400 bg-yellow-100 text-yellow-800">
                         <p class="text-sm font-semibold flex items-center">
                             <i data-lucide="alert-triangle" class="w-5 h-5 mr-2"></i>
@@ -408,7 +518,9 @@
                                         <td class="px-4 py-3 whitespace-nowrap text-sm">${p.age}</td>
                                         <td class="px-4 py-3 whitespace-nowrap text-sm font-semibold text-primary-color">${p.minLevel} / ${p.maxLevel}</td>
                                         <td class="px-4 py-3 whitespace-nowrap text-sm font-medium">
-                                            <button onclick="draftPlayer('${p.id}')" class="bg-green-500 hover:bg-green-600 text-white text-xs font-bold py-2 px-4 rounded-full transition duration-150">
+                                            <button 
+                                                ${isMyTurn ? `onclick="window.confirmDraftSelection('${p.id}', '${p.name}')"` : 'disabled'}
+                                                class="${isMyTurn ? 'bg-green-500 hover:bg-green-600' : 'bg-gray-400 cursor-not-allowed'} text-white text-xs font-bold py-2 px-4 rounded-full transition duration-150">
                                                 Drafta
                                             </button>
                                         </td>
@@ -537,7 +649,7 @@
                         <h2 class="text-xl font-bold text-gray-700 mb-4 flex items-center">
                             <i data-lucide="list-checks" class="w-5 h-5 mr-2 text-blue-500"></i>
                             Giocatori nel Draft (${draftPlayers.length})
-                        </h2>
+                        </h2 >
                         <ul class="space-y-3 max-h-64 overflow-y-auto">
                             ${draftListHtml}
                         </ul>
@@ -651,63 +763,70 @@
         let teamsUnsub = null;
         let draftUnsub = null;
         let teamUnsub = null;
+        let draftStatusUnsub = null; // Nuovo listener
 
         const stopAllListeners = () => {
             if (teamsUnsub) teamsUnsub();
             if (draftUnsub) draftUnsub();
             if (teamUnsub) teamUnsub();
+            if (draftStatusUnsub) draftStatusUnsub(); // Stoppa il nuovo listener
             teamsUnsub = null;
             draftUnsub = null;
             teamUnsub = null;
+            draftStatusUnsub = null;
         };
 
         const startDataListeners = () => {
             stopAllListeners();
 
-            if (currentTeam.isAdmin) {
-                // Admin: ascolta tutte le squadre e tutti i giocatori
-                draftUnsub = onSnapshot(getPublicCollectionRef(PLAYER_COLLECTION_NAME), (snapshot) => {
-                    draftPlayers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    // Ricarica la vista Admin solo se l'admin è sulla pagina principale o sulla gestione draft
-                    const currentTitle = document.getElementById('header-title').textContent;
-                    if (currentTitle.includes('Area Admin') && !currentTitle.includes('Gestione Rosa')) renderAdmin(); 
-                }, (error) => console.error("Errore listener draft admin:", error));
-
-                teamsUnsub = onSnapshot(getPublicCollectionRef(TEAM_COLLECTION_NAME), (snapshot) => {
-                    teams = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    // Ricarica la vista Admin se l'admin è su una vista rilevante
-                    const currentTitle = document.getElementById('header-title').textContent;
-                    if (currentTitle.includes('Area Admin')) {
-                        // Se l'admin è su una vista di gestione squadra specifica, ricarica quella
-                        const teamNameMatch = currentTitle.match(/Gestione Rosa di (.*)/);
-                        if (teamNameMatch) {
-                            const teamName = teamNameMatch[1];
-                            const team = teams.find(t => t.name === teamName);
-                            if (team) renderAdminTeamView(team.id);
-                        } else {
-                             renderAdmin(); 
-                        }
+            // Ascolta tutte le squadre (necessario per la logica del turno)
+            teamsUnsub = onSnapshot(getPublicCollectionRef(TEAM_COLLECTION_NAME), (snapshot) => {
+                teams = snapshot.docs.map(doc => {
+                    const data = doc.data();
+                    // Assicura che players sia sempre un array per il conteggio
+                    return { id: doc.id, players: data.players || [], ...data };
+                });
+                // Gestione del rendering per l'Admin
+                const currentTitle = document.getElementById('header-title').textContent;
+                if (currentTeam.isAdmin && currentTitle.includes('Area Admin')) {
+                    const teamNameMatch = currentTitle.match(/Gestione Rosa di (.*)/);
+                    if (teamNameMatch) {
+                        const teamName = teamNameMatch[1];
+                        const team = teams.find(t => t.name === teamName);
+                        if (team) renderAdminTeamView(team.id);
+                    } else {
+                         renderAdmin(); 
                     }
-                }, (error) => console.error("Errore listener teams admin:", error));
-
-            } else {
-                // Utente: ascolta solo la propria squadra e i giocatori del draft
-                draftUnsub = onSnapshot(getPublicCollectionRef(PLAYER_COLLECTION_NAME), (snapshot) => {
-                    draftPlayers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    if (document.getElementById('header-title').textContent.includes('Area Draft')) renderDraft(); 
-                }, (error) => console.error("Errore listener draft utente:", error));
-
-                if (currentTeam.id) {
-                    teamUnsub = onSnapshot(doc(getPublicCollectionRef(TEAM_COLLECTION_NAME), currentTeam.id), (docSnapshot) => {
-                        if (docSnapshot.exists()) {
-                            currentTeam = { id: docSnapshot.id, ...docSnapshot.data() };
-                            if (document.getElementById('header-title').textContent.includes('Homepage Squadra')) renderHomepage();
-                        } else {
-                            // Se la squadra viene eliminata dall'admin, l'utente viene disconnesso
-                            logout();
-                        }
-                    }, (error) => console.error("Errore listener squadra utente:", error));
                 }
+            }, (error) => console.error("Errore listener teams:", error));
+
+            // Ascolta i giocatori del draft
+            draftUnsub = onSnapshot(getPublicCollectionRef(PLAYER_COLLECTION_NAME), (snapshot) => {
+                draftPlayers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                if (document.getElementById('header-title').textContent.includes('Area Draft')) renderDraft(); 
+                if (currentTeam.isAdmin && document.getElementById('header-title').textContent.includes('Area Admin')) renderAdmin(); 
+            }, (error) => console.error("Errore listener draft:", error));
+
+            // NUOVO LISTENER: Ascolta lo stato del draft per la logica dei turni
+            draftStatusUnsub = onSnapshot(getDraftStatusDocRef(), (docSnapshot) => {
+                draftStatus = docSnapshot.exists() ? docSnapshot.data() : { lastDraftedByTeamId: null };
+                if (document.getElementById('header-title').textContent.includes('Area Draft')) renderDraft(); 
+            }, (error) => {
+                console.warn("Nessun documento di stato del draft trovato. Verrà creato al primo draft.");
+                draftStatus = { lastDraftedByTeamId: null };
+            });
+
+            // Listener specifico per l'utente loggato (per l'aggiornamento della homepage)
+            if (currentTeam && currentTeam.id) {
+                teamUnsub = onSnapshot(doc(getPublicCollectionRef(TEAM_COLLECTION_NAME), currentTeam.id), (docSnapshot) => {
+                    if (docSnapshot.exists()) {
+                        currentTeam = { id: docSnapshot.id, ...docSnapshot.data() };
+                        if (document.getElementById('header-title').textContent.includes('Homepage Squadra')) renderHomepage();
+                    } else if (!currentTeam.isAdmin) {
+                        // Se la squadra viene eliminata dall'admin, l'utente viene disconnesso
+                        logout();
+                    }
+                }, (error) => console.error("Errore listener squadra utente:", error));
             }
         };
 
@@ -755,11 +874,6 @@
         
         /**
          * Funzione per l'Admin per rimuovere un giocatore da una specifica rosa E reinserirlo nel draft.
-         * @param {string} teamId - ID del documento della squadra.
-         * @param {string} playerIdToRemove - ID (o nome, come fallback) del giocatore da rimuovere.
-         * @param {string} playerName - Nome del giocatore per il reinserimento.
-         * @param {number} minLevel - Livello min per il reinserimento.
-         * @param {number} maxLevel - Livello max per il reinserimento.
          */
         window.removePlayerFromTeamAdmin = async (teamId, playerIdToRemove, playerName, minLevel, maxLevel) => {
              if (!currentTeam || !currentTeam.isAdmin) return;
@@ -772,10 +886,8 @@
              if (indexToRemove === -1) return; 
 
              const updatedPlayers = [...teamData.players];
-             const removedPlayer = updatedPlayers.splice(indexToRemove, 1)[0]; // Cattura il giocatore rimosso
-             
-             // Estrai l'età del giocatore rimosso per il reinserimento
-             const playerAge = removedPlayer.age || 25; // Usa un valore di default se l'età non è salvata (dovrebbe esserlo)
+             const removedPlayer = updatedPlayers.splice(indexToRemove, 1)[0]; 
+             const playerAge = removedPlayer.age || 25; 
 
 
             try {
@@ -791,13 +903,11 @@
                         minLevel: removedPlayer.minLevel,
                         maxLevel: removedPlayer.maxLevel,
                         available: true,
-                        createdAt: serverTimestamp(), // Si assicura che il server timestamp sia aggiornato
+                        createdAt: serverTimestamp(),
                     };
 
                     await addDoc(getPublicCollectionRef(PLAYER_COLLECTION_NAME), playerDraftData);
                 }
-
-                // Il listener onSnapshot aggiornerà la vista automaticamente
             } catch (error) {
                 console.error("Errore Admin nella rimozione/reinserimento del giocatore:", error);
                 alert("Errore Admin nell'operazione. Controlla la console.");
@@ -806,20 +916,16 @@
         
         /**
          * Funzione per l'Admin per rimuovere un'intera squadra registrata.
-         * Utilizza il modale custom per la conferma.
-         * @param {string} teamId - ID del documento della squadra da rimuovere.
-         * @param {string} teamName - Nome della squadra per la conferma.
          */
         window.removeTeam = async (teamId, teamName) => {
             if (!currentTeam || !currentTeam.isAdmin) return;
             
-            const confirmation = await showConfirmationModal(`Sei sicuro di voler rimuovere la squadra '${teamName}'? L'operazione è irreversibile e disconnetterà l'utente.`);
+            const confirmation = await showConfirmationModal(`Sei sicuro di voler rimuovere la squadra '${teamName}'? L'operazione è irreversibile e disconnetterà l'utente.`, "Conferma Eliminazione Squadra");
             if (!confirmation) return;
 
             try {
                 const teamDocRef = doc(getPublicCollectionRef(TEAM_COLLECTION_NAME), teamId);
                 await deleteDoc(teamDocRef);
-                // La disconnessione e l'aggiornamento della lista squadre sono gestiti dai listener onSnapshot
             } catch (error) {
                 console.error("Errore nella rimozione della squadra:", error);
                 alert(`Errore nella rimozione della squadra '${teamName}'. Controlla la console.`);
@@ -827,38 +933,135 @@
         };
 
 
-        // --- FUNZIONI UTENTE (Draft) ---
-        // La funzione window.removePlayerFromTeam è stata rimossa, in linea con la richiesta.
+        // --- FUNZIONI UTENTE (Draft & RIMOZIONE) ---
+
+        /**
+         * Funzione intermedia che richiede conferma prima di rimuovere un giocatore dalla propria squadra.
+         */
+        window.confirmRemovalUser = async (playerIdToRemove, playerName, minLevel, maxLevel) => {
+            if (!currentTeam || currentTeam.isAdmin) return;
+
+            const confirmation = await showConfirmationModal(
+                `Confermi di voler rimuovere ${playerName} dalla tua rosa? Ritornerà immediatamente nel pool dei giocatori disponibili per il Draft.`,
+                "Conferma Rimozione Giocatore"
+            );
+            
+            if (confirmation) {
+                await removePlayerFromTeamUser(playerIdToRemove, playerName, minLevel, maxLevel);
+            }
+        };
+
+        /**
+         * Permette all'utente di rimuovere un giocatore dalla sua squadra e reinserirlo nel draft.
+         */
+        const removePlayerFromTeamUser = async (playerIdToRemove, playerName, minLevel, maxLevel) => {
+            if (!currentTeam || currentTeam.isAdmin) return;
+            
+            const teamDocRef = doc(getPublicCollectionRef(TEAM_COLLECTION_NAME), currentTeam.id);
+            const teamData = currentTeam; 
+            
+            // 1. Rimuovi dalla rosa
+            const indexToRemove = teamData.players.findIndex(p => p.id === playerIdToRemove);
+            if (indexToRemove === -1) {
+                console.warn("Giocatore non trovato nella rosa locale.");
+                return;
+            }
+
+            const updatedPlayers = [...teamData.players];
+            const removedPlayer = updatedPlayers.splice(indexToRemove, 1)[0];
+            const playerAge = removedPlayer.age || 25;
+
+            try {
+                // Esegui la scrittura (rimozione dalla squadra)
+                await updateDoc(teamDocRef, { players: updatedPlayers });
+
+                // 2. Reinserisci nel Draft
+                if (removedPlayer) {
+                    const playerDraftData = {
+                        name: removedPlayer.name, 
+                        role: removedPlayer.role,
+                        age: playerAge, 
+                        minLevel: removedPlayer.minLevel,
+                        maxLevel: removedPlayer.maxLevel,
+                        available: true,
+                        createdAt: serverTimestamp(),
+                    };
+                    await addDoc(getPublicCollectionRef(PLAYER_COLLECTION_NAME), playerDraftData);
+                }
+
+                alert(`${playerName} è stato rimosso dalla tua rosa e rimesso nel draft.`);
+                // Il listener onSnapshot aggiornerà la vista automaticamente
+            } catch (error) {
+                console.error("Errore nella rimozione del giocatore (utente):", error);
+                alert("Errore nella rimozione del giocatore. Controlla la console.");
+            }
+        };
+
+        /**
+         * Funzione intermedia che richiede conferma prima di eseguire il draft.
+         */
+        window.confirmDraftSelection = async (playerId, playerName) => {
+            if (!currentTeam || currentTeam.isAdmin) return;
+
+            const nextTeamId = getNextTeamIdToDraft();
+            if (currentTeam.id !== nextTeamId) {
+                alert("Non è il tuo turno! Attendi la tua chiamata.");
+                return;
+            }
+
+            const confirmation = await showConfirmationModal(
+                `Confermi la scelta di ${playerName}? Una volta draftato, il giocatore non sarà più disponibile per nessuno!`,
+                "Conferma Draft"
+            );
+            
+            if (confirmation) {
+                await draftPlayer(playerId);
+            }
+        };
 
         window.draftPlayer = async (playerId) => {
             if (!currentTeam || currentTeam.isAdmin) return;
             
-            // Cerchiamo l'oggetto completo del giocatore dal cache locale
             const playerToDraft = draftPlayers.find(p => p.id === playerId);
             if (!playerToDraft) {
                 alert("Giocatore non trovato nel draft (potrebbe essere stato appena scelto). Riprova.");
                 return;
             }
 
+            // Doppia verifica del turno
+            const nextTeamId = getNextTeamIdToDraft();
+            if (currentTeam.id !== nextTeamId) {
+                alert("Il tuo turno è appena passato o la lista dei draft non è aggiornata.");
+                return;
+            }
+
             const teamDocRef = doc(getPublicCollectionRef(TEAM_COLLECTION_NAME), currentTeam.id);
             const playerDocRef = doc(getPublicCollectionRef(PLAYER_COLLECTION_NAME), playerId);
+            const draftStatusDocRef = getDraftStatusDocRef();
 
             try {
                 await runTransaction(db, async (transaction) => {
                     // ESEGUI TUTTE LE LETTURE PRIMA DELLE SCRITTURE
                     
-                    // 1. Lettura: Ottieni il documento del giocatore nel draft
                     const playerDoc = await transaction.get(playerDocRef);
-                    
-                    // 2. Lettura: Ottieni il documento della squadra
                     const teamDoc = await transaction.get(teamDocRef);
+                    
+                    // Verifica che lo stato del draft esista (o lo creiamo) e leggilo
+                    const statusDoc = await transaction.get(draftStatusDocRef);
+                    const currentStatus = statusDoc.exists() ? statusDoc.data() : { lastDraftedByTeamId: null };
 
-                    // Verifica esistenza dopo aver eseguito tutte le letture
+                    // ULTIMA VERIFICA DEL TURNO (contro la concorrenza)
+                    const currentTeams = teams.map(t => ({ id: t.id, players: t.players }));
+                    const nextIdInTransaction = getNextTeamIdToDraft(); // Usa la logica con i dati freschi del cache locale (che è in sync con i listeners)
+
+                    if (currentTeam.id !== nextIdInTransaction) {
+                         throw "Turno non valido. Qualcun altro ha draftato prima. Riprova.";
+                    }
+
                     if (!playerDoc.exists) {
                         throw "Giocatore già draftato da un'altra squadra o non esistente.";
                     }
                     
-                    // Dati del giocatore da salvare nella rosa della squadra
                     const draftedPlayer = {
                         id: playerId, 
                         name: playerToDraft.name,
@@ -866,7 +1069,6 @@
                         age: playerToDraft.age,
                         minLevel: playerToDraft.minLevel,
                         maxLevel: playerToDraft.maxLevel,
-                        // Generazione del livello casuale
                         level: getRandomLevel(playerToDraft.minLevel, playerToDraft.maxLevel),
                         teamId: currentTeam.id, 
                         draftedAt: new Date().toISOString(), 
@@ -874,20 +1076,24 @@
                     
                     // ORA ESEGUI LE SCRITTURE
 
-                    // 3. Scrittura/Cancellazione: Rimuovi il giocatore dal Draft
+                    // 1. Rimuovi il giocatore dal Draft
                     transaction.delete(playerDocRef);
 
-                    // 4. Scrittura/Aggiornamento: Aggiungi il giocatore all'array 'players' della squadra
+                    // 2. Aggiungi il giocatore alla squadra
                     const currentPlayers = teamDoc.data().players || [];
-                    
                     transaction.update(teamDocRef, {
                         players: [...currentPlayers, draftedPlayer],
                     });
+                    
+                    // 3. AGGIORNA LO STATO DEL TURNO
+                    transaction.set(draftStatusDocRef, { 
+                        lastDraftedByTeamId: currentTeam.id,
+                        lastDraftedTime: serverTimestamp()
+                    });
                 });
 
-                console.log("Giocatore draftato con successo!");
+                console.log("Giocatore draftato con successo! Passa il turno.");
             } catch (error) {
-                // In caso di fallimento della transazione (concorrenza, regole, ecc.)
                 console.error("Errore nel processo di draft:", error);
                 const errorMessage = typeof error === 'string' ? error : 'Transazione fallita. Controlla le regole di sicurezza.';
                 alert('Errore nel draft: ' + errorMessage);
@@ -904,7 +1110,10 @@
         window.renderAdmin = renderAdmin;
         window.removeTeam = removeTeam; 
         window.removePlayerFromTeamAdmin = removePlayerFromTeamAdmin; 
-
+        window.showConfirmationModal = showConfirmationModal; // Esposizione del modale custom
+        window.removePlayerFromTeamUser = removePlayerFromTeamUser; // Esposizione della funzione per l'utente
+        window.confirmDraftSelection = confirmDraftSelection; // Esposizione del conferma draft
+        window.getNextTeamIdToDraft = getNextTeamIdToDraft; // Esposizione per debugging
     </script>
 </body>
 </html>
