@@ -274,9 +274,11 @@ const renderLogin = (message = '') => {
                     Accedi o Registrati
                 </button>
             </form>
+            
+            <hr class="my-6 border-gray-200">
 
-            <div class="space-y-4 mt-6">
-                <p class="text-lg font-bold text-gray-700 text-center border-t pt-4">Info Lega</p>
+            <div class="space-y-4">
+                <p class="text-lg font-bold text-gray-700 text-center">Info Lega</p>
                 
                 <a href="${CLASSIFICA_IMAGE_URL}" target="_blank" class="w-full text-white font-semibold py-2 px-4 rounded-lg transition duration-150 bg-indigo-500 hover:bg-indigo-600 flex items-center justify-center shadow-lg">
                     <i data-lucide="bar-chart-3" class="w-5 h-5 mr-2"></i>
