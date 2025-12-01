@@ -3,7 +3,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, getDocs, runTransaction, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-import { writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"; // Importato writeBatch
 
 // Imposta il livello di log per il debug di Firestore
 setLogLevel('debug');
@@ -36,12 +35,12 @@ let teams = []; // Cache di tutte le squadre per l'admin e la visualizzazione de
 let draftPlayers = []; // Cache dei giocatori disponibili per il draft
 let hasGlobalAccess = false; // Nuovo stato di accesso globale
 
-// Stato locale per il draft (Ripristinato)
+// Stato locale per il draft (Include ora draftOrder, currentTurnIndex e roundNumber)
 let draftStatus = { 
     isDraftActive: false,
     draftOrder: [], // Array di ID squadra in ordine di draft
     currentTurnIndex: 0, // Indice della squadra che deve draftare
-    roundNumber: 1 // Inizializza round number
+    roundNumber: 1 // NUOVO: Traccia il round attuale (per reset)
 }; 
 
 // Variabile per i link esterni
@@ -61,14 +60,6 @@ const EXTERNAL_LINKS_DOC_NAME = 'config/external_links'; // Path per i link este
 const MAX_PLAYERS_PER_TEAM_PER_ROUND = 1; 
 // Limite totale per la rosa (utilizzato solo per la visualizzazione)
 const FINAL_ROSTER_SIZE = 99; 
-
-// LINK ESTERNI PER CLASSIFICA E RISULTATI (SOSTITUISCI QUESTI CON I TUOI LINK REALI)
-const CLASSIFICA_IMAGE_URL = 'https://i.imgur.com/example_classifica.png'; // SOSTITUISCI QUI!
-const RISULTATI_IMAGE_URL = 'https://i.imgur.com/example_risultati.png';   // SOSTITUISCI QUI!
-
-// LOGO DI FALLBACK PER LE SQUADRE
-const DEFAULT_TEAM_LOGO_URL = 'https://i.imgur.com/gK9qS1T.png'; 
-
 
 // --- FUNZIONE UTILITY PER LIVELLO CASUALE ---
 
@@ -334,22 +325,6 @@ const renderLogin = (message = '') => {
     document.getElementById('login-form').addEventListener('submit', handleLogin);
 };
 
-// Funzione aggiunta per salvare il logo della squadra
-window.updateTeamLogo = async (newUrl) => {
-    if (!currentTeam || currentTeam.isAdmin) return;
-    const url = newUrl.trim() || DEFAULT_TEAM_LOGO_URL;
-
-    try {
-        const teamDocRef = doc(getPublicCollectionRef(TEAM_COLLECTION_NAME), currentTeam.id);
-        await updateDoc(teamDocRef, { logoUrl: url });
-        alert("Logo della squadra aggiornato!");
-    } catch (error) {
-        console.error("Errore nell'aggiornamento del logo:", error);
-        alert("Errore nell'aggiornamento del logo. Controlla la console.");
-    }
-};
-
-
 const renderHomepage = () => {
     if (!currentTeam) return renderLogin("Errore: Dati squadra non disponibili.");
 
@@ -409,36 +384,20 @@ const renderHomepage = () => {
         `).join('')
         : '<li class="text-center text-gray-500 p-4 bg-gray-100 rounded-lg border border-gray-200">Ancora nessun giocatore in squadra. Vai al Draft!</li>';
 
-    // URL del logo della squadra (usa il default se non specificato)
-    const teamLogoUrl = currentTeam.logoUrl || DEFAULT_TEAM_LOGO_URL;
-
-
     const homepageHtml = `
         <div class="space-y-8">
-            <div class="p-6 bg-blue-50 rounded-xl border border-blue-200 shadow-lg flex items-start space-x-4">
-                <img src="${teamLogoUrl}" alt="${currentTeam.name} Logo" class="w-16 h-16 object-cover rounded-full border-2 border-blue-400">
-                <div class="flex-grow">
-                    <h2 class="text-xl font-bold text-blue-700 mb-3 flex items-center">
-                        <i data-lucide="badge-check" class="w-5 h-5 mr-2 text-blue-500"></i>
-                        I Miei Dettagli Squadra
-                    </h2>
-                    <p class="text-gray-700 mb-2">Squadra: <span class="font-mono bg-blue-100 px-2 py-1 rounded text-sm text-blue-700">${currentTeam.name}</span></p>
-                    <div class="mt-4">
-                        <label for="presidentName" class="block text-sm font-medium text-gray-700 mb-1">Nome Presidente (Modificabile)</label>
-                        <input type="text" id="presidentName" value="${currentTeam.presidentName}" class="input-style max-w-md" onchange="updatePresidentName(this.value)">
-                    </div>
+            <div class="p-6 bg-blue-50 rounded-xl border border-blue-200 shadow-lg">
+                <h2 class="text-xl font-bold text-blue-700 mb-3 flex items-center">
+                    <i data-lucide="badge-check" class="w-5 h-5 mr-2 text-blue-500"></i>
+                    I Miei Dettagli Squadra
+                </h2>
+                <p class="text-gray-700 mb-4">Nome Squadra (Login): <span class="font-mono bg-blue-100 px-2 py-1 rounded text-sm text-blue-700">${currentTeam.name}</span></p>
+                <div class="mt-4">
+                    <label for="presidentName" class="block text-sm font-medium text-gray-700 mb-1">Nome Presidente (Modificabile)</label>
+                    <input type="text" id="presidentName" value="${currentTeam.presidentName}" class="input-style max-w-md" onchange="updatePresidentName(this.value)">
                 </div>
             </div>
-            
-            <div class="p-4 bg-gray-50 rounded-xl border border-gray-200 shadow-sm">
-                <label for="teamLogoUrlInput" class="block text-sm font-medium text-gray-700 mb-1">URL Logo Squadra (Carica l'immagine su Imgur/GitHub e incolla qui il link diretto)</label>
-                <div class="flex space-x-3">
-                    <input type="url" id="teamLogoUrlInput" value="${currentTeam.logoUrl || ''}" class="input-style flex-grow" placeholder="https://link_diretto_al_tuo_logo.png">
-                    <button onclick="updateTeamLogo(document.getElementById('teamLogoUrlInput').value)" class="btn-primary bg-purple-500 hover:bg-purple-600 text-xs px-4 py-2">
-                        Salva Logo
-                    </button>
-                </div>
-            </div>
+
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <button onclick="renderDraft()" class="btn-primary">
                     <i data-lucide="rocket" class="w-5 h-5"></i>
@@ -489,7 +448,7 @@ window.renderDraft = async () => {
     const currentTurnTeam = teams.find(t => t.id === teamIdForDisplay) || { name: 'Squadra Sconosciuta' };
     
     // Tracking del round
-    const currentRoundNumber = draftStatus.roundNumber || 1; 
+    const currentRoundNumber = draftStatus.roundNumber || 1;
     const hasDraftedThisRound = currentTeam.players?.some(p => p.roundNumber === currentRoundNumber) || false;
     
     // Determina se il Draft è Finito (tutte le squadre hanno avuto un turno)
@@ -513,7 +472,7 @@ window.renderDraft = async () => {
             <div class="text-center text-blue-700 p-8 bg-blue-100 rounded-xl border border-blue-400">
                 <i data-lucide="trophy" class="w-8 h-8 mx-auto mb-4"></i>
                 <h3 class="text-xl font-bold">Draft Round ${currentRoundNumber} Completato!</h3>
-                <p>Tutte le squadre hanno avuto il loro turno. L'Admin deve avviare il prossimo round o resettare l'ordine.</p>
+                <p>Tutte le squadre hanno avuto il loro turno. L'Admin deve avviare il prossimo round.</p>
             </div>
         `;
     } else {
@@ -636,8 +595,7 @@ window.renderDraft = async () => {
                                     <i data-lucide="${statusIcon}" class="w-4 h-4 mr-2"></i>
                                     #${index + 1}: ${teamName} 
                                     ${isCurrent ? '(Turno Attuale)' : hasDraftedInCurrentRound ? '(Draftato in Round ' + currentRoundNumber + ')' : isPast ? '(Saltato/Assente)' : ''}
-                                
-                                    </li>
+                                </li>
                             `;
                         }).join('')}
                     </ul>
@@ -697,44 +655,21 @@ const renderAdminTeamView = (teamId) => {
 };
 window.renderAdminTeamView = renderAdminTeamView;
 
-/**
- * Salva gli URL aggiornati della classifica e dei risultati nel database.
- * @param {string} classificaUrl - Nuovo URL della classifica.
- * @param {string} risultatiUrl - Nuovo URL dei risultati.
- */
-const saveExternalLinks = async (classificaUrl, risultatiUrl) => {
-    if (!currentTeam || currentTeam.isAdmin) return;
-    try {
-        const docRef = getExternalLinksDocRef();
-        await setDoc(docRef, {
-            classificaUrl: classificaUrl,
-            risultatiUrl: risultatiUrl,
-            lastUpdated: serverTimestamp()
-        }, { merge: true });
-        alert("URL Classifica e Risultati aggiornati con successo!");
-    } catch (error) {
-        console.error("Errore nell'aggiornamento del logo:", error);
-        alert("Errore nell'aggiornamento del logo. Controlla la console.");
-    }
-};
-window.saveExternalLinks = saveExternalLinks; // Esposizione
-
-// NUOVA FUNZIONE: Avanza al Round Successivo (Incrementa il round e mescola l'ordine)
+// NUOVA FUNZIONE: Avanza al Round Successivo
 window.advanceToNextRound = async () => {
     if (!currentTeam || !currentTeam.isAdmin) return;
 
     const currentRound = draftStatus.roundNumber || 1;
-    const newRoundNumber = currentRound + 1;
-    
-    const confirmation = await showConfirmationModal(
-        `Sei sicuro di voler avviare il Round ${newRoundNumber}? Questo genererà un nuovo ordine di draft casuale e permetterà a tutte le squadre di draftare un altro giocatore in questo nuovo round.`
-    );
+    const confirmation = await showConfirmationModal(`Sei sicuro di voler avviare il Round ${currentRound + 1}? Questo resetterà l'ordine di draft e permetterà a tutte le squadre di draftare un altro giocatore.`);
     if (!confirmation) return;
 
     try {
         const docRef = getDraftStatusDocRef();
 
-        // 1. Ricarica la lista squadre e rimescola l'ordine
+        // 1. Incrementa il round number
+        const newRoundNumber = currentRound + 1;
+
+        // 2. Ricarica la lista squadre e rimescola l'ordine
         const teamsSnapshot = await getDocs(getPublicCollectionRef(TEAM_COLLECTION_NAME));
         teams = teamsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); 
         let teamIds = teams.map(t => t.id); 
@@ -744,12 +679,12 @@ window.advanceToNextRound = async () => {
             isDraftActive: true, 
             draftOrder: shuffledOrder, // Nuovo ordine casuale
             currentTurnIndex: 0, // Reset del turno
-            roundNumber: newRoundNumber, // NUOVO ROUND NUMBER
+            roundNumber: newRoundNumber, // Nuovo round number
             lastUpdated: serverTimestamp() 
         }, { merge: true });
 
         // Dopo l'aggiornamento, il listener re-renderizzerà la vista Admin.
-        alert(`Round ${newRoundNumber} avviato con successo con nuovo ordine!`);
+        alert(`Round ${newRoundNumber} avviato con successo!`);
     } catch (error) {
         console.error("Errore nell'avanzamento al round successivo:", error);
         alert("Errore nell'avanzamento del round. Controlla la console.");
@@ -757,7 +692,7 @@ window.advanceToNextRound = async () => {
 };
 window.advanceToNextRound = advanceToNextRound;
 
-// NUOVA FUNZIONE DI DEBUG: Resetta solo l'indice del turno a 0
+// NUOVA FUNZIONE: Resetta l'indice del turno a 0 (Turno 1)
 window.resetTurnIndex = async () => {
     if (!currentTeam || !currentTeam.isAdmin || !draftStatus.isDraftActive) return;
 
@@ -778,102 +713,27 @@ window.resetTurnIndex = async () => {
 };
 window.resetTurnIndex = resetTurnIndex;
 
-// FUNZIONE AGGIORNATA: Resetta solo l'ordine di draft, il turno, E SVUOTA LE ROSE
-// Questa azione funge da "riavvio del draft da zero" con un nuovo ordine casuale e rose vuote.
-window.resetDraftOrderAndTurn = async () => {
+/**
+ * Salva gli URL aggiornati della classifica e dei risultati nel database.
+ * @param {string} classificaUrl - Nuovo URL della classifica.
+ * @param {string} risultatiUrl - Nuovo URL dei risultati.
+ */
+const saveExternalLinks = async (classificaUrl, risultatiUrl) => {
     if (!currentTeam || !currentTeam.isAdmin) return;
-
-    const confirmation = await showConfirmationModal(
-        `ATTENZIONE! Vuoi resettare l'ordine di draft e il turno al Turno 1? Questa operazione svuoterà le rose dei giocatori per consentire il re-draft. Procedere?`
-    );
-    if (!confirmation) return;
-    
     try {
-        const docRef = getDraftStatusDocRef();
-
-        // 1. Ricarica la lista squadre
-        const teamsSnapshot = await getDocs(getPublicCollectionRef(TEAM_COLLECTION_NAME));
-        teams = teamsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); 
-        let teamIds = teams.map(t => t.id); 
-        
-        if (teamIds.length === 0) {
-            return alert("Non ci sono squadre registrate per avviare il draft.");
-        }
-        
-        // Genera un nuovo ordine casuale
-        const shuffledOrder = shuffleArray(teamIds); 
-
-        // 2. SVUOTA L'ARRAY 'players' IN TUTTE LE SQUADRE TRAMITE BATCH
-        const batch = writeBatch(db);
-        const teamsColRef = getPublicCollectionRef(TEAM_COLLECTION_NAME);
-        teamsSnapshot.docs.forEach(doc => {
-            const teamDocRef = doc(teamsColRef, doc.id);
-            // Imposta l'array players a vuoto per sbloccare il draft
-            batch.update(teamDocRef, { players: [] });
-        });
-        await batch.commit();
-
-        // 3. Resetta lo stato globale del Draft
+        const docRef = getExternalLinksDocRef();
         await setDoc(docRef, {
-            isDraftActive: false, 
-            draftOrder: shuffledOrder, // Nuovo ordine casuale
-            currentTurnIndex: 0, // Reset turno
-            roundNumber: 1, // Reset round
+            classificaUrl: classificaUrl,
+            risultatiUrl: risultatiUrl,
             lastUpdated: serverTimestamp()
         }, { merge: true });
-
-        alert("Ordine di draft e turni resettati a Turno 1, Round 1. Le rose sono state svuotate. Ri-aggiungi i giocatori al draft prima di avviare.");
-        
-        // Forza il ricaricamento dell'Admin
-        renderAdmin();
+        alert("URL Classifica e Risultati aggiornati con successo!");
     } catch (error) {
-        console.error("Errore nel reset dell'ordine e del turno:", error);
-        alert("Errore nel reset. Controlla la console.");
+        console.error("Errore nel salvataggio dei link esterni:", error);
+        alert("Errore nel salvataggio. Controlla la console.");
     }
 };
-window.resetDraftOrderAndTurn = resetDraftOrderAndTurn; // Esposizione
-
-// FUNZIONE ORIGINALE: Resetta l'intero stato del Draft (CANCELLA ROSE E TUTTI I DATI)
-window.resetFullDraftState = async () => {
-    if (!currentTeam || !currentTeam.isAdmin) return;
-
-    const confirmation = await showConfirmationModal(
-        `ATTENZIONE! Vuoi resettare COMPLETAMENTE lo stato del Draft (Ordine, Turno 1, ecc.) E CANCELLARE TUTTE LE ROSE DALLE SQUADRE? QUESTA AZIONE È IRREVERSIBILE!`
-    );
-    if (!confirmation) return;
-    
-    try {
-        // 1. Resetta TUTTE le Rose delle Squadre
-        // Usa writeBatch importato per cancellare le rose
-        const batch = writeBatch(db);
-        const teamsSnapshot = await getDocs(getPublicCollectionRef(TEAM_COLLECTION_NAME));
-        const teamsColRef = getPublicCollectionRef(TEAM_COLLECTION_NAME);
-
-        teamsSnapshot.docs.forEach(doc => {
-            const teamDocRef = doc(teamsColRef, doc.id);
-            // Aggiungi l'operazione di aggiornamento al batch: setta players a array vuoto
-            batch.update(teamDocRef, { players: [] });
-        });
-
-        await batch.commit();
-        
-        // 2. Resetta lo stato globale del Draft
-        const docRef = getDraftStatusDocRef();
-        await setDoc(docRef, {
-            isDraftActive: false,
-            draftOrder: [], // Reset ordine
-            currentTurnIndex: 0, // Reset turno
-            roundNumber: 1, // Reset round
-            lastUpdated: serverTimestamp()
-        }, { merge: true });
-
-        alert("Stato del Draft e TUTTE le Rose sono state resettate completamente. Pronto per una nuova lega!");
-    } catch (error) {
-        console.error("Errore nel reset completo del draft:", error);
-        alert("Errore nel reset completo. Controlla la console.");
-    }
-};
-window.resetFullDraftState = resetFullDraftState; // Esposizione
+window.saveExternalLinks = saveExternalLinks; // Esposizione
 
 
 const renderAdmin = () => {
@@ -888,44 +748,9 @@ const renderAdmin = () => {
     const draftOrderLength = draftStatus.draftOrder?.length || 0;
     const currentTurnTeamName = teams.find(t => t.id === draftStatus.draftOrder[draftStatus.currentTurnIndex])?.name || 'N/D';
     const currentRound = draftStatus.roundNumber || 1;
-    
-    // Determina se tutti i turni del round sono stati usati
-    const isRoundTurnFinished = draftOrderLength > 0 && draftStatus.currentTurnIndex >= draftOrderLength;
-    
-    // 2. Determina lo stato principale
-    let controlButtonsHtml = '';
 
-    if (isRoundTurnFinished) {
-        // SCENARIO 1: TUTTI I TURNI SONO STATI ESEGUITI. (Priorità assoluta)
-        controlButtonsHtml = `
-            <button onclick="advanceToNextRound()" class="bg-blue-500 hover:bg-blue-600 text-white text-lg font-bold py-3 px-8 rounded-xl transition duration-150">
-                <i data-lucide="chevrons-right" class="w-6 h-6 inline mr-2"></i>
-                Avvia Round ${currentRound + 1}
-            </button>
-        `;
-    } else if (draftStatus.isDraftActive) {
-        // SCENARIO 2: DRAFT ATTIVO, turni ancora da completare.
-        controlButtonsHtml = `
-            <button onclick="${draftButtonAction}" class="text-white text-lg font-bold py-3 px-8 rounded-xl transition duration-150 ${draftButtonColor} mb-2">
-                <i data-lucide="${draftButtonIcon}" class="w-6 h-6 inline mr-2"></i>
-                ${draftButtonText}
-            </button>
-            ${draftStatus.currentTurnIndex > 0 ? `
-                <button onclick="resetTurnIndex()" class="bg-yellow-500 hover:bg-yellow-600 text-white text-lg font-bold py-3 px-8 rounded-xl transition duration-150">
-                    <i data-lucide="rotate-ccw" class="w-6 h-6 inline mr-2"></i>
-                    Forza Reset Turno a #1 (Debug)
-                </button>
-            ` : ''}
-        `;
-    } else {
-        // SCENARIO 3: DRAFT FERMO, turni non completati (Avvia Round 1 o riprendi a metà).
-        controlButtonsHtml = `
-            <button onclick="updateDraftStatus(true)" class="text-white text-lg font-bold py-3 px-8 rounded-xl transition duration-150 bg-green-600 hover:bg-green-700">
-                <i data-lucide="check-circle" class="w-6 h-6 inline mr-2"></i>
-                Avvia il Draft (Round ${currentRound})
-            </button>
-        `;
-    }
+    // Determina se tutti i turni del round sono stati usati (anche se il draft è fermo)
+    const isRoundFinished = draftOrderLength > 0 && draftStatus.currentTurnIndex >= draftOrderLength;
     
     // Lista di tutte le squadre registrate
     const teamsListHtml = teams.length > 0
@@ -972,7 +797,28 @@ const renderAdmin = () => {
                     Controllo Stato Draft (Round ${currentRound})
                 </h2>
                 <div class="flex flex-col space-y-3">
-                    ${controlButtonsHtml}
+                    ${draftStatus.isDraftActive ? `
+                        <button onclick="${draftButtonAction}" class="text-white text-lg font-bold py-3 px-8 rounded-xl transition duration-150 ${draftButtonColor} mb-2">
+                            <i data-lucide="${draftButtonIcon}" class="w-6 h-6 inline mr-2"></i>
+                            ${draftButtonText}
+                        </button>
+                        ${draftStatus.currentTurnIndex > 0 ? `
+                            <button onclick="resetTurnIndex()" class="bg-yellow-500 hover:bg-yellow-600 text-white text-lg font-bold py-3 px-8 rounded-xl transition duration-150">
+                                <i data-lucide="rotate-ccw" class="w-6 h-6 inline mr-2"></i>
+                                Resetta Turno a #1
+                            </button>
+                        ` : ''}
+                    ` : isRoundFinished || draftOrderLength === 0 ? `
+                        <button onclick="advanceToNextRound()" class="bg-blue-500 hover:bg-blue-600 text-white text-lg font-bold py-3 px-8 rounded-xl transition duration-150">
+                            <i data-lucide="chevrons-right" class="w-6 h-6 inline mr-2"></i>
+                            Avvia Round ${draftOrderLength === 0 ? currentRound : currentRound + 1}
+                        </button>
+                    ` : `
+                        <button onclick="updateDraftStatus(true)" class="text-white text-lg font-bold py-3 px-8 rounded-xl transition duration-150 bg-green-600 hover:bg-green-700">
+                            <i data-lucide="check-circle" class="w-6 h-6 inline mr-2"></i>
+                            Avvia il Draft
+                        </button>
+                    `}
                 </div>
                 
                 <p class="mt-3 text-sm text-indigo-800">Stato Attuale: <strong class="font-extrabold ${draftStatus.isDraftActive ? 'text-red-700' : 'text-green-700'}">${draftStatus.isDraftActive ? 'ATTIVO' : 'FERMO'}</strong></p>
@@ -1008,24 +854,6 @@ const renderAdmin = () => {
                     </div>
                 </div>
 
-            </div>
-            
-            <div class="p-6 bg-red-100 rounded-xl border border-red-400 shadow-lg mt-8 text-center">
-                <h2 class="text-xl font-bold text-red-700 mb-4 flex items-center justify-center">
-                    <i data-lucide="shield-alert" class="w-6 h-6 mr-2"></i> GESTIONE RESET
-                </h2>
-                
-                <button onclick="resetDraftOrderAndTurn()" class="btn-primary bg-yellow-600 hover:bg-yellow-700 text-lg font-bold py-3 px-8 rounded-xl transition duration-150 mb-4">
-                    <i data-lucide="rotate-ccw" class="w-6 h-6 inline mr-2"></i> RESET ORDINE & TURNO (Svuota Rose)
-                </button>
-                <p class="mt-2 text-sm text-yellow-800 mb-6">Resetta l'ordine del draft, il turno al #1, e **svuota** tutte le rose per un nuovo draft (i giocatori draftati vengono persi).</p>
-
-                <hr class="my-4 border-red-400">
-                
-                <button onclick="resetFullDraftState()" class="btn-primary bg-red-700 hover:bg-red-800 text-lg font-bold py-3 px-8 rounded-xl transition duration-150">
-                    <i data-lucide="skull" class="w-6 h-6 inline mr-2"></i> RESET COMPLETO LEGA (CANCELLA TUTTO)
-                </button>
-                <p class="mt-2 text-sm text-red-800">Resetta lo stato del draft E **CANCELLA** tutte le Rose delle Squadre (AZIONE IRREVERSIBILE).</p>
             </div>
             <div class="p-6 bg-green-50 rounded-xl border border-green-200 shadow-lg">
                 <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center">
@@ -1168,19 +996,19 @@ let teamsUnsub = null;
 let draftUnsub = null;
 let teamUnsub = null;
 let draftStatusUnsub = null; 
-let externalLinksUnsub = null; 
+let externalLinksUnsub = null; // NUOVO UNSUB
 
 const stopAllListeners = () => {
     if (teamsUnsub) teamsUnsub();
     if (draftUnsub) draftUnsub();
     if (teamUnsub) teamUnsub();
     if (draftStatusUnsub) draftStatusUnsub(); 
-    if (externalLinksUnsub) externalLinksUnsub(); 
+    if (externalLinksUnsub) externalLinksUnsub(); // NUOVO STOP
     teamsUnsub = null;
     draftUnsub = null;
     teamUnsub = null;
     draftStatusUnsub = null; 
-    externalLinksUnsub = null; 
+    externalLinksUnsub = null; // NUOVO RESET
 };
 
 const startDataListeners = () => {
@@ -1209,8 +1037,8 @@ const startDataListeners = () => {
             externalLinks = docSnapshot.data();
         } else {
             externalLinks = { 
-                classificaUrl: CLASSIFICA_IMAGE_URL, // Usa la costante di fallback per l'Admin
-                risultatiUrl: RISULTATI_IMAGE_URL    // Usa la costante di fallback per l'Admin
+                classificaUrl: 'https://i.imgur.com/default_classifica.png',
+                risultatiUrl: 'https://i.imgur.com/default_risultati.png'
             };
         }
         
@@ -1279,8 +1107,7 @@ window.updateDraftStatus = async (isActive) => {
     if (!currentTeam || !currentTeam.isAdmin) return;
     try {
         const docRef = getDraftStatusDocRef();
-        // Manteniamo il currentRound per la visualizzazione, anche se la logica dei round è stata semplificata
-        const currentRound = draftStatus.roundNumber || 1; 
+        const currentRound = draftStatus.roundNumber || 1;
 
         if (isActive) {
             // Logica di AVVIO DRAFT: Genera l'ordine casuale
@@ -1303,8 +1130,7 @@ window.updateDraftStatus = async (isActive) => {
                 isDraftActive: true, 
                 draftOrder: shuffledOrder, // Salva l'ordine casuale
                 currentTurnIndex: 0, 
-                // Non modifichiamo il round number qui, lo lasciamo all'azione di reset completo
-                roundNumber: currentRound,
+                roundNumber: currentRound, // Mantiene il round attuale
                 lastUpdated: serverTimestamp() 
             }, { merge: true });
 
@@ -1465,7 +1291,7 @@ window.draftPlayer = async (playerId) => {
         return;
     }
 
-    // 4. Controllo del limite di 1 giocatore per round 
+    // 4. Controllo del limite di 1 giocatore per round
     const currentRoundNumber = draftStatus.roundNumber || 1;
     const hasDraftedThisRound = currentTeam.players?.some(p => p.roundNumber === currentRoundNumber) || false;
     
@@ -1487,8 +1313,6 @@ window.draftPlayer = async (playerId) => {
     const playerDocRef = doc(getPublicCollectionRef(PLAYER_COLLECTION_NAME), playerId);
     const draftStatusDocRef = getDraftStatusDocRef(); // Riferimento al documento di stato del draft
 
-    let isDraftEnding = false; // Flag locale per re-rendering Admin
-
     try {
         await runTransaction(db, async (transaction) => {
             // ESEGUI TUTTE LE LETTURE PRIMA DELLE SCRITTURE
@@ -1500,8 +1324,6 @@ window.draftPlayer = async (playerId) => {
             const currentPlayers = teamData.players || [];
             const statusData = statusDoc.data();
             const txRoundNumber = statusData.roundNumber || 1; // RoundNumber letto dalla transazione
-            const draftOrderLength = statusData.draftOrder?.length || 0;
-            const nextTurnIndex = statusData.currentTurnIndex + 1;
 
             // Re-verifica concorrente del limite assoluto all'interno della transazione
             if (currentPlayers.length >= FINAL_ROSTER_SIZE) {
@@ -1547,6 +1369,9 @@ window.draftPlayer = async (playerId) => {
             });
             
             // 3. Aggiorna il turno
+            const nextTurnIndex = statusData.currentTurnIndex + 1;
+            const draftOrderLength = statusData.draftOrder?.length || 0;
+
             if (nextTurnIndex < draftOrderLength) {
                 // Passa al prossimo turno
                 transaction.update(draftStatusDocRef, {
@@ -1554,7 +1379,6 @@ window.draftPlayer = async (playerId) => {
                 });
             } else {
                 // Fine del Draft (tutte le squadre hanno avuto il loro turno)
-                isDraftEnding = true; // Imposta il flag locale
                  transaction.update(draftStatusDocRef, {
                     isDraftActive: false,
                     currentTurnIndex: nextTurnIndex
@@ -1564,21 +1388,6 @@ window.draftPlayer = async (playerId) => {
         });
 
         console.log("Giocatore draftato con successo e turno avanzato!");
-
-        // ** AGGIUNTA PER RENDERIZZAZIONE IMMEDIATA**: 
-        // Dopo che l'ultimo utente ha draftato, forziamo l'Admin a vedere lo stato aggiornato
-        if (isDraftEnding) {
-            // Aggiorniamo lo stato locale del draft per il rendering immediato (anche se onSnapshot farà il suo lavoro)
-            draftStatus.isDraftActive = false;
-            draftStatus.currentTurnIndex = draftStatus.draftOrder.length; 
-            if (document.getElementById('header-title').textContent.includes('Area Draft')) {
-                renderDraft(); // Aggiorna la vista dell'utente
-            }
-            // NOTA: Il listener onSnapshot aggiornerà la vista Admin in modo asincrono.
-        } else {
-            renderDraft(); // Aggiorna la vista dell'utente
-        }
-        
     } catch (error) {
         // In caso di fallimento della transazione (concorrenza, regole, ecc.)
         console.error("Errore nel processo di draft:", error);
